@@ -6,3 +6,4 @@ pub mod core;
 pub mod ui;
 
 pub use crate::core::entry::FileEntry;
+pub use crate::core::history::History;

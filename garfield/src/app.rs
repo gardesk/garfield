@@ -1,13 +1,19 @@
 //! Application state and event loop.
 
-use garfield::core::{read_directory, sort_entries, SortDirection, SortOrder};
-use garfield::ui::ListView;
+use garfield::core::{read_directory, sort_entries, History, SortDirection, SortOrder};
+use garfield::ui::{Breadcrumb, ListView, Sidebar};
 use anyhow::Result;
-use gartk_core::{InputEvent, Key, Rect, Theme};
-use gartk_render::{Renderer, Surface, TextStyle};
+use gartk_core::{InputEvent, Key, Point, Rect, Theme};
+use gartk_render::{Renderer, Surface};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
+
+/// Height of the breadcrumb bar.
+const BREADCRUMB_HEIGHT: u32 = 40;
+
+/// Width of the sidebar.
+const SIDEBAR_WIDTH: u32 = 180;
 
 /// Application state.
 pub struct App {
@@ -17,8 +23,12 @@ pub struct App {
     renderer: Renderer,
     /// Graphics context for blitting.
     gc: u32,
-    /// Current directory path.
-    current_dir: PathBuf,
+    /// Navigation history.
+    history: History,
+    /// Breadcrumb path bar.
+    breadcrumb: Breadcrumb,
+    /// Places sidebar.
+    sidebar: Sidebar,
     /// List view component.
     list_view: ListView,
     /// Sort order.
@@ -70,8 +80,25 @@ impl App {
         let current_dir = start_dir
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
-        // Create list view
-        let list_bounds = Rect::new(0, 40, width, height - 40); // Leave space for path bar
+        // Create history
+        let history = History::new(current_dir.clone());
+
+        // Create breadcrumb (spans full width, sidebar controls itself)
+        let breadcrumb_bounds = Rect::new(SIDEBAR_WIDTH as i32, 0, width - SIDEBAR_WIDTH, BREADCRUMB_HEIGHT);
+        let mut breadcrumb = Breadcrumb::new(breadcrumb_bounds);
+        breadcrumb.set_path(&current_dir);
+
+        // Create sidebar
+        let sidebar_bounds = Rect::new(0, 0, SIDEBAR_WIDTH, height);
+        let sidebar = Sidebar::new(sidebar_bounds);
+
+        // Create list view (to the right of sidebar)
+        let list_bounds = Rect::new(
+            SIDEBAR_WIDTH as i32,
+            BREADCRUMB_HEIGHT as i32,
+            width - SIDEBAR_WIDTH,
+            height - BREADCRUMB_HEIGHT,
+        );
         let mut list_view = ListView::new(list_bounds);
 
         // Load initial directory
@@ -83,7 +110,9 @@ impl App {
             window,
             renderer,
             gc,
-            current_dir,
+            history,
+            breadcrumb,
+            sidebar,
             list_view,
             sort_order: SortOrder::Name,
             sort_direction: SortDirection::Ascending,
@@ -101,12 +130,27 @@ impl App {
         event_loop.run(|ev, event| {
             match event {
                 InputEvent::Key(key_event) if key_event.pressed => {
-                    self.handle_key(&key_event.key);
+                    self.handle_key(&key_event.key, &key_event.modifiers);
+                    ev.request_redraw();
+                }
+                InputEvent::MousePress(mouse_event) => {
+                    self.handle_click(Point::new(mouse_event.position.x, mouse_event.position.y));
+                    ev.request_redraw();
+                }
+                InputEvent::MouseMove(mouse_event) => {
+                    let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
+                    self.breadcrumb.on_mouse_move(pos);
+                    self.sidebar.on_mouse_move(pos);
+                    ev.request_redraw();
+                }
+                InputEvent::MouseLeave => {
+                    self.breadcrumb.clear_hover();
+                    self.sidebar.clear_hover();
                     ev.request_redraw();
                 }
                 InputEvent::Resize { width, height } => {
                     let _ = self.renderer.resize(width, height);
-                    self.list_view.set_bounds(Rect::new(0, 40, width, height - 40));
+                    self.update_layout(width, height);
                     ev.request_redraw();
                 }
                 InputEvent::Expose => {
@@ -130,7 +174,32 @@ impl App {
     }
 
     /// Handle a key press.
-    fn handle_key(&mut self, key: &Key) {
+    fn handle_key(&mut self, key: &Key, modifiers: &gartk_core::Modifiers) {
+        // Alt+Arrow for history navigation
+        if modifiers.alt {
+            match key {
+                Key::Left => {
+                    self.go_back();
+                    return;
+                }
+                Key::Right => {
+                    self.go_forward();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Ctrl+B to toggle sidebar
+        if modifiers.ctrl {
+            if let Key::Char('b') = key {
+                self.sidebar.toggle();
+                let size = self.renderer.size();
+                self.update_layout(size.width, size.height);
+                return;
+            }
+        }
+
         match key {
             Key::Escape | Key::Char('q') => {
                 self.should_quit = true;
@@ -175,6 +244,35 @@ impl App {
         }
     }
 
+    /// Handle mouse click.
+    fn handle_click(&mut self, pos: Point) {
+        // Check sidebar clicks first
+        if let Some(path) = self.sidebar.on_click(pos) {
+            self.navigate_to(path);
+            return;
+        }
+
+        // Check breadcrumb back button
+        if self.breadcrumb.back_button_bounds().contains_point(pos) {
+            self.go_back();
+            return;
+        }
+
+        // Check breadcrumb forward button
+        if self.breadcrumb.forward_button_bounds().contains_point(pos) {
+            self.go_forward();
+            return;
+        }
+
+        // Check breadcrumb segments
+        if let Some(path) = self.breadcrumb.on_click(pos) {
+            self.navigate_to(path);
+            return;
+        }
+
+        // TODO: Handle list view clicks
+    }
+
     /// Enter the selected entry (open directory).
     fn enter_selected(&mut self) {
         if let Some(entry) = self.list_view.selected_entry().cloned() {
@@ -187,49 +285,94 @@ impl App {
 
     /// Navigate to parent directory.
     fn go_up(&mut self) {
-        if let Some(parent) = self.current_dir.parent() {
+        if let Some(parent) = self.history.current().parent() {
             self.navigate_to(parent.to_path_buf());
         }
     }
 
-    /// Navigate to a new directory.
-    fn navigate_to(&mut self, path: PathBuf) {
-        if path.is_dir() {
-            self.current_dir = path;
-            self.refresh();
+    /// Go back in history.
+    fn go_back(&mut self) {
+        if let Some(path) = self.history.go_back().cloned() {
+            self.load_directory(&path);
         }
+    }
+
+    /// Go forward in history.
+    fn go_forward(&mut self) {
+        if let Some(path) = self.history.go_forward().cloned() {
+            self.load_directory(&path);
+        }
+    }
+
+    /// Navigate to a new directory (adds to history).
+    fn navigate_to(&mut self, path: PathBuf) {
+        if path.is_dir() && path != *self.history.current() {
+            self.history.navigate(path.clone());
+            self.load_directory(&path);
+        }
+    }
+
+    /// Load a directory (without modifying history).
+    fn load_directory(&mut self, path: &PathBuf) {
+        self.breadcrumb.set_path(path);
+        let mut entries = read_directory(path).unwrap_or_default();
+        sort_entries(&mut entries, self.sort_order, self.sort_direction);
+        self.list_view.set_entries(entries);
     }
 
     /// Refresh the current directory listing.
     fn refresh(&mut self) {
-        let mut entries = read_directory(&self.current_dir).unwrap_or_default();
-        sort_entries(&mut entries, self.sort_order, self.sort_direction);
-        self.list_view.set_entries(entries);
+        let path = self.history.current().clone();
+        self.load_directory(&path);
+    }
+
+    /// Update layout based on sidebar visibility.
+    fn update_layout(&mut self, width: u32, height: u32) {
+        let sidebar_w = self.sidebar.width();
+
+        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
+        self.breadcrumb.set_bounds(Rect::new(
+            sidebar_w as i32,
+            0,
+            width - sidebar_w,
+            BREADCRUMB_HEIGHT,
+        ));
+        self.list_view.set_bounds(Rect::new(
+            sidebar_w as i32,
+            BREADCRUMB_HEIGHT as i32,
+            width - sidebar_w,
+            height - BREADCRUMB_HEIGHT,
+        ));
     }
 
     /// Render the application.
     fn render(&mut self) -> Result<()> {
         let theme = self.renderer.theme().clone();
         let size = self.renderer.size();
+        let sidebar_w = self.sidebar.width();
 
         // Clear background
         self.renderer.clear()?;
 
-        // Draw path bar
-        let path_rect = Rect::new(0, 0, size.width, 40);
-        self.renderer.fill_rect(path_rect, theme.item_background)?;
+        // Draw sidebar
+        self.sidebar.render(&self.renderer)?;
 
-        let path_style = TextStyle::new()
-            .font_family(&theme.font_family)
-            .font_size(theme.font_size + 2.0)
-            .color(theme.item_foreground);
+        // Draw breadcrumb
+        self.breadcrumb.render(
+            &self.renderer,
+            self.history.can_go_back(),
+            self.history.can_go_forward(),
+        )?;
 
-        let path_text = self.current_dir.to_string_lossy();
-        let text_rect = Rect::new(16, 0, size.width - 32, 40);
-        self.renderer.text_in_rect(&path_text, text_rect, &path_style)?;
-
-        // Draw separator line
-        self.renderer.line(0.0, 40.0, size.width as f64, 40.0, theme.border, 1.0)?;
+        // Draw separator line under breadcrumb
+        self.renderer.line(
+            sidebar_w as f64,
+            BREADCRUMB_HEIGHT as f64,
+            size.width as f64,
+            BREADCRUMB_HEIGHT as f64,
+            theme.border,
+            1.0,
+        )?;
 
         // Draw list view
         self.list_view.render(&self.renderer)?;
