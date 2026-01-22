@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "garfield",
+    "garfieldctl",
+    "garfield-ipc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["mfwolffe"]
+license = "MIT"
+repository = "https://github.com/mfwolffe/gardesk"
+
+[workspace.dependencies]
+# UI toolkit
+gartk-core = { path = "../gartk/gartk-core" }
+gartk-x11 = { path = "../gartk/gartk-x11" }
+gartk-render = { path = "../gartk/gartk-render" }
+
+# X11
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# File system
+dirs = "6.0"
+chrono = "0.4"
+
+# IPC types (shared between crates)
+garfield-ipc = { path = "garfield-ipc" }
