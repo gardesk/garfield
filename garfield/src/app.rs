@@ -1,9 +1,9 @@
 //! Application state and event loop.
 
-use garfield::core::{read_directory, sort_entries, History, SortDirection, SortOrder};
-use garfield::ui::{AddressBar, Breadcrumb, ListView, Sidebar};
+use garfield::core::{read_directory, sort_entries, FileEntry, History, SortDirection, SortOrder};
+use garfield::ui::{AddressBar, Breadcrumb, ColumnView, GridView, ListView, Sidebar, StatusBar};
 use anyhow::Result;
-use gartk_core::{InputEvent, Key, Point, Rect, Theme};
+use gartk_core::{InputEvent, Key, Modifiers, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
@@ -14,6 +14,20 @@ const BREADCRUMB_HEIGHT: u32 = 40;
 
 /// Width of the sidebar.
 const SIDEBAR_WIDTH: u32 = 180;
+
+/// Height of the status bar.
+const STATUS_BAR_HEIGHT: u32 = 24;
+
+/// View mode for the file listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Detailed list view with columns.
+    List,
+    /// Grid/icon view.
+    Grid,
+    /// Miller columns view.
+    Columns,
+}
 
 /// Application state.
 pub struct App {
@@ -33,6 +47,14 @@ pub struct App {
     sidebar: Sidebar,
     /// List view component.
     list_view: ListView,
+    /// Grid view component.
+    grid_view: GridView,
+    /// Column view component.
+    column_view: ColumnView,
+    /// Current view mode.
+    view_mode: ViewMode,
+    /// Status bar component.
+    status_bar: StatusBar,
     /// Sort order.
     sort_order: SortOrder,
     /// Sort direction.
@@ -97,21 +119,41 @@ impl App {
         let sidebar_bounds = Rect::new(0, 0, SIDEBAR_WIDTH, height);
         let sidebar = Sidebar::new(sidebar_bounds);
 
-        // Create list view (to the right of sidebar)
-        let list_bounds = Rect::new(
+        // Create status bar
+        let status_bar_bounds = Rect::new(
+            SIDEBAR_WIDTH as i32,
+            (height - STATUS_BAR_HEIGHT) as i32,
+            width - SIDEBAR_WIDTH,
+            STATUS_BAR_HEIGHT,
+        );
+        let mut status_bar = StatusBar::new(status_bar_bounds);
+        status_bar.set_view_mode("List");
+
+        // Content area bounds (for all views)
+        let content_bounds = Rect::new(
             SIDEBAR_WIDTH as i32,
             BREADCRUMB_HEIGHT as i32,
             width - SIDEBAR_WIDTH,
-            height - BREADCRUMB_HEIGHT,
+            height - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
         );
-        let mut list_view = ListView::new(list_bounds);
+
+        // Create all three views with same bounds
+        let mut list_view = ListView::new(content_bounds);
+        let mut grid_view = GridView::new(content_bounds);
+        let mut column_view = ColumnView::new(content_bounds);
 
         // Load initial directory
         let mut entries = read_directory(&current_dir).unwrap_or_default();
         sort_entries(&mut entries, SortOrder::Name, SortDirection::Ascending);
-        list_view.set_entries(entries);
 
-        Ok(Self {
+        // Initialize all views with entries
+        list_view.set_entries(entries.clone());
+        grid_view.set_entries(entries.clone());
+        column_view.set_entries(entries.clone());
+        column_view.set_path(&current_dir, SortOrder::Name, SortDirection::Ascending);
+
+        // Initialize app
+        let mut app = Self {
             window,
             renderer,
             gc,
@@ -120,10 +162,17 @@ impl App {
             address_bar,
             sidebar,
             list_view,
+            grid_view,
+            column_view,
+            view_mode: ViewMode::List,
+            status_bar,
             sort_order: SortOrder::Name,
             sort_direction: SortDirection::Ascending,
             should_quit: false,
-        })
+        };
+        app.update_status_bar(&entries);
+
+        Ok(app)
     }
 
     /// Run the application event loop.
@@ -140,18 +189,66 @@ impl App {
                     ev.request_redraw();
                 }
                 InputEvent::MousePress(mouse_event) => {
-                    self.handle_click(Point::new(mouse_event.position.x, mouse_event.position.y));
+                    let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
+
+                    // Check for column resize start in list view
+                    if self.view_mode == ViewMode::List {
+                        if let Some(divider) = self.list_view.divider_at(pos) {
+                            self.list_view.start_resize(divider);
+                            ev.request_redraw();
+                            return Ok(true);
+                        }
+                    }
+
+                    self.handle_click(pos, &mouse_event.modifiers);
                     ev.request_redraw();
+                }
+                InputEvent::MouseRelease(_) => {
+                    // Stop column resizing
+                    if self.list_view.is_resizing() {
+                        self.list_view.stop_resize();
+                        ev.request_redraw();
+                    }
+                    // Stop rubber band selection
+                    if self.grid_view.is_dragging() {
+                        self.grid_view.stop_drag();
+                        ev.request_redraw();
+                    }
                 }
                 InputEvent::MouseMove(mouse_event) => {
                     let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
+
+                    // During list view column resize, only track the list view
+                    if self.list_view.is_resizing() {
+                        self.list_view.on_mouse_move(pos);
+                        ev.request_redraw();
+                        return Ok(!self.should_quit);
+                    }
+
+                    // During grid view rubber band, only track the grid view
+                    if self.grid_view.is_dragging() {
+                        self.grid_view.on_mouse_move(pos);
+                        ev.request_redraw();
+                        return Ok(!self.should_quit);
+                    }
+
                     self.breadcrumb.on_mouse_move(pos);
                     self.sidebar.on_mouse_move(pos);
+                    match self.view_mode {
+                        ViewMode::List => self.list_view.on_mouse_move(pos),
+                        ViewMode::Grid => self.grid_view.on_mouse_move(pos),
+                        ViewMode::Columns => self.column_view.on_mouse_move(pos),
+                    }
                     ev.request_redraw();
                 }
                 InputEvent::MouseLeave => {
                     self.breadcrumb.clear_hover();
                     self.sidebar.clear_hover();
+                    match self.view_mode {
+                        ViewMode::List => self.list_view.clear_hover(),
+                        ViewMode::Grid => self.grid_view.clear_hover(),
+                        ViewMode::Columns => self.column_view.clear_hover(),
+                    }
                     ev.request_redraw();
                 }
                 InputEvent::Resize { width, height } => {
@@ -212,6 +309,27 @@ impl App {
         // Ctrl keybinds
         if modifiers.ctrl {
             match key {
+                Key::Char('1') => {
+                    self.set_view_mode(ViewMode::List);
+                    return;
+                }
+                Key::Char('2') => {
+                    self.set_view_mode(ViewMode::Grid);
+                    return;
+                }
+                Key::Char('3') => {
+                    self.set_view_mode(ViewMode::Columns);
+                    return;
+                }
+                Key::Char('a') => {
+                    // Select all in active view
+                    match self.view_mode {
+                        ViewMode::List => self.list_view.select_all(),
+                        ViewMode::Grid => self.grid_view.select_all(),
+                        ViewMode::Columns => self.column_view.select_all(),
+                    }
+                    return;
+                }
                 Key::Char('b') => {
                     self.sidebar.toggle();
                     let size = self.renderer.size();
@@ -246,31 +364,69 @@ impl App {
                 self.should_quit = true;
             }
             Key::Up | Key::Char('k') => {
-                self.list_view.select_prev();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.select_prev(),
+                    ViewMode::Grid => self.grid_view.select_prev(),
+                    ViewMode::Columns => self.column_view.select_prev(),
+                }
             }
             Key::Down | Key::Char('j') => {
-                self.list_view.select_next();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.select_next(),
+                    ViewMode::Grid => self.grid_view.select_next(),
+                    ViewMode::Columns => self.column_view.select_next(),
+                }
             }
             Key::Home | Key::Char('g') => {
-                self.list_view.select_first();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.select_first(),
+                    ViewMode::Grid => self.grid_view.select_first(),
+                    ViewMode::Columns => self.column_view.select_first(),
+                }
             }
             Key::End | Key::Char('G') => {
-                self.list_view.select_last();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.select_last(),
+                    ViewMode::Grid => self.grid_view.select_last(),
+                    ViewMode::Columns => self.column_view.select_last(),
+                }
             }
             Key::PageUp => {
-                self.list_view.page_up();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.page_up(),
+                    ViewMode::Grid => self.grid_view.page_up(),
+                    ViewMode::Columns => self.column_view.page_up(),
+                }
             }
             Key::PageDown => {
-                self.list_view.page_down();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.page_down(),
+                    ViewMode::Grid => self.grid_view.page_down(),
+                    ViewMode::Columns => self.column_view.page_down(),
+                }
             }
             Key::Return | Key::Right | Key::Char('l') => {
-                self.enter_selected();
+                // For grid view, left/right navigate within row
+                if self.view_mode == ViewMode::Grid && *key == Key::Right {
+                    self.grid_view.select_right();
+                } else {
+                    self.enter_selected();
+                }
             }
             Key::Backspace | Key::Left | Key::Char('h') => {
-                self.go_up();
+                // For grid view, left navigates within row
+                if self.view_mode == ViewMode::Grid && *key == Key::Left {
+                    self.grid_view.select_left();
+                } else {
+                    self.go_up();
+                }
             }
             Key::Char('H') => {
-                self.list_view.toggle_hidden();
+                match self.view_mode {
+                    ViewMode::List => self.list_view.toggle_hidden(),
+                    ViewMode::Grid => self.grid_view.toggle_hidden(),
+                    ViewMode::Columns => self.column_view.toggle_hidden(),
+                }
             }
             Key::Char('~') => {
                 self.navigate_to(dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
@@ -286,7 +442,7 @@ impl App {
     }
 
     /// Handle mouse click.
-    fn handle_click(&mut self, pos: Point) {
+    fn handle_click(&mut self, pos: Point, modifiers: &gartk_core::Modifiers) {
         // Check sidebar clicks first
         if let Some(path) = self.sidebar.on_click(pos) {
             self.navigate_to(path);
@@ -311,17 +467,67 @@ impl App {
             return;
         }
 
-        // TODO: Handle list view clicks
+        // Handle view-specific clicks
+        match self.view_mode {
+            ViewMode::List => {
+                // Check list view header click (for sorting)
+                if let Some((order, direction)) = self.list_view.on_header_click(pos) {
+                    self.sort_order = order;
+                    self.sort_direction = direction;
+                    self.refresh();
+                    return;
+                }
+                // Check list view row click (with modifiers for multi-select)
+                if self.list_view.on_row_click(pos, modifiers).is_some() {
+                    return;
+                }
+            }
+            ViewMode::Grid => {
+                if self.grid_view.on_click(pos, modifiers).is_some() {
+                    return;
+                }
+            }
+            ViewMode::Columns => {
+                if self.column_view.on_click(pos, modifiers).is_some() {
+                    return;
+                }
+            }
+        }
     }
 
     /// Enter the selected entry (open directory).
     fn enter_selected(&mut self) {
-        if let Some(entry) = self.list_view.selected_entry().cloned() {
+        let entry = match self.view_mode {
+            ViewMode::List => self.list_view.selected_entry().cloned(),
+            ViewMode::Grid => self.grid_view.selected_entry().cloned(),
+            ViewMode::Columns => self.column_view.selected_entry().cloned(),
+        };
+
+        if let Some(entry) = entry {
             if entry.is_dir() {
                 self.navigate_to(entry.path);
             }
             // TODO: Open files with default application
         }
+    }
+
+    /// Set the current view mode.
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
+
+        self.view_mode = mode;
+        let mode_name = match mode {
+            ViewMode::List => "List",
+            ViewMode::Grid => "Grid",
+            ViewMode::Columns => "Columns",
+        };
+        self.status_bar.set_view_mode(mode_name);
+
+        // Sync selection state between views on switch
+        // (For now, just refresh to ensure consistency)
+        self.refresh();
     }
 
     /// Navigate to parent directory.
@@ -358,7 +564,37 @@ impl App {
         self.breadcrumb.set_path(path);
         let mut entries = read_directory(path).unwrap_or_default();
         sort_entries(&mut entries, self.sort_order, self.sort_direction);
-        self.list_view.set_entries(entries);
+
+        // Update all views with entries
+        self.list_view.set_entries(entries.clone());
+        self.grid_view.set_entries(entries.clone());
+        self.column_view.set_entries(entries.clone());
+        self.column_view.set_path(path, self.sort_order, self.sort_direction);
+
+        self.update_status_bar(&entries);
+    }
+
+    /// Update status bar with current directory info.
+    fn update_status_bar(&mut self, entries: &[FileEntry]) {
+        let visible_count = entries.iter().filter(|e| !e.hidden).count();
+        let (selected_count, selected_size) = match self.view_mode {
+            ViewMode::List => {
+                let count = self.list_view.selection_count();
+                let size: u64 = self.list_view.selected_entries().iter().map(|e| e.size).sum();
+                (count, size)
+            }
+            ViewMode::Grid => {
+                let count = self.grid_view.selection_count();
+                let size: u64 = self.grid_view.selected_entries().iter().map(|e| e.size).sum();
+                (count, size)
+            }
+            ViewMode::Columns => {
+                let count = self.column_view.selection_count();
+                let size: u64 = self.column_view.selected_entries().iter().map(|e| e.size).sum();
+                (count, size)
+            }
+        };
+        self.status_bar.update(visible_count, selected_count, selected_size);
     }
 
     /// Refresh the current directory listing.
@@ -377,14 +613,24 @@ impl App {
             BREADCRUMB_HEIGHT,
         );
 
-        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
-        self.breadcrumb.set_bounds(bar_bounds);
-        self.address_bar.set_bounds(bar_bounds);
-        self.list_view.set_bounds(Rect::new(
+        let content_bounds = Rect::new(
             sidebar_w as i32,
             BREADCRUMB_HEIGHT as i32,
             width - sidebar_w,
-            height - BREADCRUMB_HEIGHT,
+            height - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
+        );
+
+        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
+        self.breadcrumb.set_bounds(bar_bounds);
+        self.address_bar.set_bounds(bar_bounds);
+        self.list_view.set_bounds(content_bounds);
+        self.grid_view.set_bounds(content_bounds);
+        self.column_view.set_bounds(content_bounds);
+        self.status_bar.set_bounds(Rect::new(
+            sidebar_w as i32,
+            (height - STATUS_BAR_HEIGHT) as i32,
+            width - sidebar_w,
+            STATUS_BAR_HEIGHT,
         ));
     }
 
@@ -421,8 +667,15 @@ impl App {
             1.0,
         )?;
 
-        // Draw list view
-        self.list_view.render(&self.renderer)?;
+        // Draw active view
+        match self.view_mode {
+            ViewMode::List => self.list_view.render(&self.renderer)?,
+            ViewMode::Grid => self.grid_view.render(&self.renderer)?,
+            ViewMode::Columns => self.column_view.render(&self.renderer)?,
+        }
+
+        // Draw status bar
+        self.status_bar.render(&self.renderer)?;
 
         // Flush and copy to window
         self.renderer.flush();
