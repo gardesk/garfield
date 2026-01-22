@@ -16,7 +16,12 @@ pub struct AddressBar {
     active: bool,
     /// Padding.
     padding: u32,
+    /// Blink counter for cursor animation.
+    blink_counter: u32,
 }
+
+/// Frames per blink cycle (on + off).
+const BLINK_RATE: u32 = 30;
 
 impl AddressBar {
     /// Create a new address bar.
@@ -27,6 +32,7 @@ impl AddressBar {
             bounds,
             active: false,
             padding: 8,
+            blink_counter: 0,
         }
     }
 
@@ -45,6 +51,7 @@ impl AddressBar {
         self.text = path.to_string_lossy().to_string();
         self.cursor = self.text.len();
         self.active = true;
+        self.blink_counter = 0;
     }
 
     /// Deactivate the address bar without navigating.
@@ -93,6 +100,9 @@ impl AddressBar {
         if !self.active {
             return false;
         }
+
+        // Reset blink on keypress so cursor stays visible while typing
+        self.blink_counter = 0;
 
         match key {
             Key::Escape => {
@@ -146,7 +156,7 @@ impl AddressBar {
     }
 
     /// Render the address bar.
-    pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
+    pub fn render(&mut self, renderer: &Renderer) -> anyhow::Result<()> {
         if !self.active {
             return Ok(());
         }
@@ -171,18 +181,22 @@ impl AddressBar {
         let text_y = self.bounds.y + (self.bounds.height as i32 - theme.font_size as i32) / 2;
         renderer.text(&self.text, text_x as f64, text_y as f64, &style)?;
 
-        // Draw cursor (blinking would require timer, so just make it prominent)
-        let text_before_cursor = &self.text[..self.cursor];
-        let cursor_offset = renderer.measure_text(text_before_cursor, &style)?.width;
-        let cursor_x = text_x + cursor_offset as i32;
-        let cursor_y = self.bounds.y + 6;
-        let cursor_height = self.bounds.height - 12;
+        // Blinking cursor - visible for first half of blink cycle
+        self.blink_counter = (self.blink_counter + 1) % BLINK_RATE;
+        let cursor_visible = self.blink_counter < BLINK_RATE / 2;
 
-        // Draw cursor as a filled rectangle
-        renderer.fill_rect(
-            gartk_core::Rect::new(cursor_x, cursor_y, 2, cursor_height),
-            theme.input_cursor,
-        )?;
+        if cursor_visible {
+            let text_before_cursor = &self.text[..self.cursor];
+            let cursor_offset = renderer.measure_text(text_before_cursor, &style)?.width;
+            let cursor_x = text_x + cursor_offset as i32;
+            let cursor_y = self.bounds.y + 6;
+            let cursor_height = self.bounds.height - 12;
+
+            renderer.fill_rect(
+                gartk_core::Rect::new(cursor_x, cursor_y, 2, cursor_height),
+                theme.input_cursor,
+            )?;
+        }
 
         Ok(())
     }
