@@ -1,29 +1,35 @@
-//! Places sidebar with quick navigation to common directories.
+//! Places sidebar with quick navigation to common directories and bookmarks.
 
 use gartk_core::{Point, Rect};
 use gartk_render::{Renderer, TextStyle};
-use std::path::PathBuf;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
-/// A place in the sidebar.
+/// A place or bookmark in the sidebar.
 #[derive(Debug, Clone)]
 pub struct Place {
     /// Display name.
     pub name: String,
-    /// Icon (emoji or text symbol).
+    /// Icon (text symbol).
     pub icon: String,
     /// Path to navigate to.
     pub path: PathBuf,
     /// Bounding rectangle for hit testing.
     bounds: Rect,
+    /// Whether this is a bookmark (can be removed).
+    pub is_bookmark: bool,
 }
 
 /// Places sidebar component.
 pub struct Sidebar {
-    /// List of places.
+    /// Built-in places (XDG directories).
     places: Vec<Place>,
+    /// User bookmarks.
+    bookmarks: Vec<Place>,
     /// Component bounds.
     bounds: Rect,
-    /// Hovered item index.
+    /// Hovered item index (in combined list).
     hovered: Option<usize>,
     /// Whether sidebar is visible.
     visible: bool,
@@ -31,20 +37,30 @@ pub struct Sidebar {
     item_height: u32,
     /// Padding.
     padding: u32,
+    /// Path to bookmarks file.
+    bookmarks_path: PathBuf,
 }
 
 impl Sidebar {
     /// Create a new sidebar with default places.
     pub fn new(bounds: Rect) -> Self {
+        let bookmarks_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("garfield")
+            .join("bookmarks");
+
         let mut sidebar = Self {
             places: Vec::new(),
+            bookmarks: Vec::new(),
             bounds,
             hovered: None,
             visible: true,
-            item_height: 32,
+            item_height: 28,
             padding: 8,
+            bookmarks_path,
         };
         sidebar.populate_default_places();
+        sidebar.load_bookmarks();
         sidebar
     }
 
@@ -59,6 +75,7 @@ impl Sidebar {
                 icon: "~".to_string(),
                 path: home,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -69,6 +86,7 @@ impl Sidebar {
                 icon: "D".to_string(),
                 path: desktop,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -79,6 +97,7 @@ impl Sidebar {
                 icon: "d".to_string(),
                 path: docs,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -89,6 +108,7 @@ impl Sidebar {
                 icon: "v".to_string(),
                 path: downloads,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -99,6 +119,7 @@ impl Sidebar {
                 icon: "m".to_string(),
                 path: music,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -109,6 +130,7 @@ impl Sidebar {
                 icon: "p".to_string(),
                 path: pictures,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -119,6 +141,7 @@ impl Sidebar {
                 icon: "V".to_string(),
                 path: videos,
                 bounds: Rect::new(0, 0, 0, 0),
+                is_bookmark: false,
             });
         }
 
@@ -128,6 +151,7 @@ impl Sidebar {
             icon: "/".to_string(),
             path: PathBuf::from("/"),
             bounds: Rect::new(0, 0, 0, 0),
+            is_bookmark: false,
         });
 
         // Trash (if available)
@@ -139,8 +163,112 @@ impl Sidebar {
                     icon: "x".to_string(),
                     path: trash_path,
                     bounds: Rect::new(0, 0, 0, 0),
+                    is_bookmark: false,
                 });
             }
+        }
+    }
+
+    /// Load bookmarks from config file.
+    fn load_bookmarks(&mut self) {
+        self.bookmarks.clear();
+
+        if let Ok(file) = fs::File::open(&self.bookmarks_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().map_while(Result::ok) {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+
+                let path = PathBuf::from(line);
+                if path.exists() {
+                    let name = path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| line.to_string());
+
+                    self.bookmarks.push(Place {
+                        name,
+                        icon: "*".to_string(),
+                        path,
+                        bounds: Rect::new(0, 0, 0, 0),
+                        is_bookmark: true,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Save bookmarks to config file.
+    fn save_bookmarks(&self) {
+        // Ensure config directory exists
+        if let Some(parent) = self.bookmarks_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        if let Ok(mut file) = fs::File::create(&self.bookmarks_path) {
+            for bookmark in &self.bookmarks {
+                let _ = writeln!(file, "{}", bookmark.path.display());
+            }
+        }
+    }
+
+    /// Add a bookmark for the given path. Returns true if added.
+    pub fn add_bookmark(&mut self, path: &Path) -> bool {
+        // Check if already bookmarked
+        if self.bookmarks.iter().any(|b| b.path == path) {
+            return false;
+        }
+
+        // Check if it's a default place
+        if self.places.iter().any(|p| p.path == path) {
+            return false;
+        }
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+        self.bookmarks.push(Place {
+            name,
+            icon: "*".to_string(),
+            path: path.to_path_buf(),
+            bounds: Rect::new(0, 0, 0, 0),
+            is_bookmark: true,
+        });
+
+        self.save_bookmarks();
+        true
+    }
+
+    /// Remove a bookmark by path. Returns true if removed.
+    pub fn remove_bookmark(&mut self, path: &Path) -> bool {
+        let initial_len = self.bookmarks.len();
+        self.bookmarks.retain(|b| b.path != path);
+
+        if self.bookmarks.len() != initial_len {
+            self.save_bookmarks();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if a path is bookmarked.
+    pub fn is_bookmarked(&self, path: &Path) -> bool {
+        self.bookmarks.iter().any(|b| b.path == path)
+    }
+
+    /// Toggle bookmark for a path.
+    pub fn toggle_bookmark(&mut self, path: &Path) -> bool {
+        if self.is_bookmarked(path) {
+            self.remove_bookmark(path);
+            false
+        } else {
+            self.add_bookmark(path);
+            true
         }
     }
 
@@ -168,6 +296,30 @@ impl Sidebar {
         self.visible
     }
 
+    /// Total number of items (places + bookmarks + separator if bookmarks exist).
+    fn total_items(&self) -> usize {
+        self.places.len() + self.bookmarks.len()
+    }
+
+    /// Get item by combined index.
+    fn get_item(&self, index: usize) -> Option<&Place> {
+        if index < self.places.len() {
+            self.places.get(index)
+        } else {
+            self.bookmarks.get(index - self.places.len())
+        }
+    }
+
+    /// Get mutable item by combined index.
+    fn get_item_mut(&mut self, index: usize) -> Option<&mut Place> {
+        let places_len = self.places.len();
+        if index < places_len {
+            self.places.get_mut(index)
+        } else {
+            self.bookmarks.get_mut(index - places_len)
+        }
+    }
+
     /// Handle mouse move for hover effects.
     pub fn on_mouse_move(&mut self, pos: Point) {
         if !self.visible || !self.bounds.contains_point(pos) {
@@ -175,7 +327,15 @@ impl Sidebar {
             return;
         }
 
-        self.hovered = self.places.iter().position(|p| p.bounds.contains_point(pos));
+        self.hovered = None;
+        for i in 0..self.total_items() {
+            if let Some(place) = self.get_item(i) {
+                if place.bounds.contains_point(pos) {
+                    self.hovered = Some(i);
+                    break;
+                }
+            }
+        }
     }
 
     /// Handle mouse click. Returns the path to navigate to, if any.
@@ -184,9 +344,11 @@ impl Sidebar {
             return None;
         }
 
-        for place in &self.places {
-            if place.bounds.contains_point(pos) {
-                return Some(place.path.clone());
+        for i in 0..self.total_items() {
+            if let Some(place) = self.get_item(i) {
+                if place.bounds.contains_point(pos) {
+                    return Some(place.path.clone());
+                }
             }
         }
 
@@ -235,39 +397,97 @@ impl Sidebar {
             .font_size(theme.font_size)
             .color(theme.selection_background);
 
-        // Render each place
+        let header_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.item_foreground.with_alpha(0.5));
+
         let mut y = self.bounds.y + self.padding as i32;
 
-        for (i, place) in self.places.iter_mut().enumerate() {
-            // Update bounds for hit testing
-            place.bounds = Rect::new(
-                self.bounds.x,
-                y,
-                self.bounds.width,
-                self.item_height,
-            );
-
+        // Render places
+        for i in 0..self.places.len() {
             let is_hovered = self.hovered == Some(i);
+            y = self.render_item(renderer, i, y, is_hovered, &icon_style, &name_style, &hover_style)?;
+        }
 
-            // Draw hover background
-            if is_hovered {
-                renderer.fill_rect(place.bounds, theme.item_background)?;
+        // Render bookmarks section if any
+        if !self.bookmarks.is_empty() {
+            // Separator
+            y += 8;
+            renderer.line(
+                (self.bounds.x + self.padding as i32) as f64,
+                y as f64,
+                (self.bounds.x + self.bounds.width as i32 - self.padding as i32) as f64,
+                y as f64,
+                theme.border,
+                1.0,
+            )?;
+            y += 8;
+
+            // Header
+            let header_x = self.bounds.x + self.padding as i32;
+            renderer.text("Bookmarks", header_x as f64, y as f64, &header_style)?;
+            y += (theme.font_size + 4.0) as i32;
+
+            // Bookmark items
+            for i in 0..self.bookmarks.len() {
+                let combined_index = self.places.len() + i;
+                let is_hovered = self.hovered == Some(combined_index);
+                y = self.render_item(renderer, combined_index, y, is_hovered, &icon_style, &name_style, &hover_style)?;
             }
-
-            let text_style = if is_hovered { &hover_style } else { &name_style };
-
-            // Draw icon
-            let icon_x = self.bounds.x + self.padding as i32;
-            let text_y = y + (self.item_height as i32 - theme.font_size as i32) / 2;
-            renderer.text(&place.icon, icon_x as f64, text_y as f64, &icon_style)?;
-
-            // Draw name
-            let name_x = icon_x + 24;
-            renderer.text(&place.name, name_x as f64, text_y as f64, text_style)?;
-
-            y += self.item_height as i32;
         }
 
         Ok(())
+    }
+
+    /// Render a single sidebar item.
+    fn render_item(
+        &mut self,
+        renderer: &Renderer,
+        index: usize,
+        y: i32,
+        is_hovered: bool,
+        icon_style: &TextStyle,
+        name_style: &TextStyle,
+        hover_style: &TextStyle,
+    ) -> anyhow::Result<i32> {
+        let theme = renderer.theme();
+
+        // Get item (need to reborrow to avoid issues)
+        let (icon, name) = {
+            let item = self.get_item(index).unwrap();
+            (item.icon.clone(), item.name.clone())
+        };
+
+        // Update bounds for hit testing
+        let item_bounds = Rect::new(
+            self.bounds.x,
+            y,
+            self.bounds.width,
+            self.item_height,
+        );
+
+        // Store bounds
+        if let Some(item) = self.get_item_mut(index) {
+            item.bounds = item_bounds;
+        }
+
+        // Draw hover background
+        if is_hovered {
+            renderer.fill_rect(item_bounds, theme.item_background)?;
+        }
+
+        let text_style = if is_hovered { hover_style } else { name_style };
+
+        // Draw icon
+        let icon_x = self.bounds.x + self.padding as i32;
+        let text_y = y + (self.item_height as i32 - theme.font_size as i32) / 2;
+        renderer.text(&icon, icon_x as f64, text_y as f64, icon_style)?;
+
+        // Draw name
+        let name_x = icon_x + 20;
+        renderer.text(&name, name_x as f64, text_y as f64, text_style)?;
+
+        Ok(y + self.item_height as i32)
     }
 }

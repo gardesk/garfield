@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::core::{read_directory, sort_entries, History, SortDirection, SortOrder};
-use garfield::ui::{Breadcrumb, ListView, Sidebar};
+use garfield::ui::{AddressBar, Breadcrumb, ListView, Sidebar};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
@@ -27,6 +27,8 @@ pub struct App {
     history: History,
     /// Breadcrumb path bar.
     breadcrumb: Breadcrumb,
+    /// Address bar for path editing.
+    address_bar: AddressBar,
     /// Places sidebar.
     sidebar: Sidebar,
     /// List view component.
@@ -88,6 +90,9 @@ impl App {
         let mut breadcrumb = Breadcrumb::new(breadcrumb_bounds);
         breadcrumb.set_path(&current_dir);
 
+        // Create address bar (same bounds as breadcrumb)
+        let address_bar = AddressBar::new(breadcrumb_bounds);
+
         // Create sidebar
         let sidebar_bounds = Rect::new(0, 0, SIDEBAR_WIDTH, height);
         let sidebar = Sidebar::new(sidebar_bounds);
@@ -112,6 +117,7 @@ impl App {
             gc,
             history,
             breadcrumb,
+            address_bar,
             sidebar,
             list_view,
             sort_order: SortOrder::Name,
@@ -175,6 +181,19 @@ impl App {
 
     /// Handle a key press.
     fn handle_key(&mut self, key: &Key, modifiers: &gartk_core::Modifiers) {
+        // Handle address bar input first
+        if self.address_bar.is_active() {
+            if *key == Key::Return {
+                if let Some(path) = self.address_bar.confirm() {
+                    self.navigate_to(path);
+                }
+                return;
+            }
+            if self.address_bar.handle_key(key) {
+                return;
+            }
+        }
+
         // Alt+Arrow for history navigation
         if modifiers.alt {
             match key {
@@ -190,18 +209,40 @@ impl App {
             }
         }
 
-        // Ctrl+B to toggle sidebar
+        // Ctrl keybinds
         if modifiers.ctrl {
-            if let Key::Char('b') = key {
-                self.sidebar.toggle();
-                let size = self.renderer.size();
-                self.update_layout(size.width, size.height);
-                return;
+            match key {
+                Key::Char('b') => {
+                    self.sidebar.toggle();
+                    let size = self.renderer.size();
+                    self.update_layout(size.width, size.height);
+                    return;
+                }
+                Key::Char('d') => {
+                    // Toggle bookmark for current directory
+                    let current = self.history.current().clone();
+                    self.sidebar.toggle_bookmark(&current);
+                    return;
+                }
+                Key::Char('l') => {
+                    // Activate address bar
+                    let current = self.history.current().clone();
+                    self.address_bar.activate(&current);
+                    return;
+                }
+                _ => {}
             }
         }
 
         match key {
-            Key::Escape | Key::Char('q') => {
+            Key::Escape => {
+                if self.address_bar.is_active() {
+                    self.address_bar.cancel();
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            Key::Char('q') => {
                 self.should_quit = true;
             }
             Key::Up | Key::Char('k') => {
@@ -329,14 +370,16 @@ impl App {
     /// Update layout based on sidebar visibility.
     fn update_layout(&mut self, width: u32, height: u32) {
         let sidebar_w = self.sidebar.width();
-
-        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
-        self.breadcrumb.set_bounds(Rect::new(
+        let bar_bounds = Rect::new(
             sidebar_w as i32,
             0,
             width - sidebar_w,
             BREADCRUMB_HEIGHT,
-        ));
+        );
+
+        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
+        self.breadcrumb.set_bounds(bar_bounds);
+        self.address_bar.set_bounds(bar_bounds);
         self.list_view.set_bounds(Rect::new(
             sidebar_w as i32,
             BREADCRUMB_HEIGHT as i32,
@@ -357,12 +400,16 @@ impl App {
         // Draw sidebar
         self.sidebar.render(&self.renderer)?;
 
-        // Draw breadcrumb
-        self.breadcrumb.render(
-            &self.renderer,
-            self.history.can_go_back(),
-            self.history.can_go_forward(),
-        )?;
+        // Draw breadcrumb or address bar
+        if self.address_bar.is_active() {
+            self.address_bar.render(&self.renderer)?;
+        } else {
+            self.breadcrumb.render(
+                &self.renderer,
+                self.history.can_go_back(),
+                self.history.can_go_forward(),
+            )?;
+        }
 
         // Draw separator line under breadcrumb
         self.renderer.line(
