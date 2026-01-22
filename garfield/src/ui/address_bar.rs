@@ -153,37 +153,35 @@ impl AddressBar {
 
         let theme = renderer.theme();
 
-        // Draw background
-        renderer.fill_rect(self.bounds, theme.item_background)?;
+        // Draw distinct background for edit mode
+        let edit_bg = theme.input_background;
+        renderer.fill_rect(self.bounds, edit_bg)?;
 
-        // Draw border
-        renderer.stroke_rect(self.bounds, theme.border, 1.0)?;
+        // Draw prominent border to indicate edit mode
+        renderer.stroke_rect(self.bounds, theme.selection_background, 2.0)?;
 
         // Text style
         let style = TextStyle::new()
             .font_family(&theme.font_family)
             .font_size(theme.font_size + 1.0)
-            .color(theme.item_foreground);
+            .color(theme.input_foreground);
 
         // Draw text
         let text_x = self.bounds.x + self.padding as i32;
         let text_y = self.bounds.y + (self.bounds.height as i32 - theme.font_size as i32) / 2;
         renderer.text(&self.text, text_x as f64, text_y as f64, &style)?;
 
-        // Draw cursor
+        // Draw cursor (blinking would require timer, so just make it prominent)
         let text_before_cursor = &self.text[..self.cursor];
         let cursor_offset = renderer.measure_text(text_before_cursor, &style)?.width;
-        let cursor_x = text_x as f64 + cursor_offset as f64;
-        let cursor_top = self.bounds.y as f64 + 4.0;
-        let cursor_bottom = (self.bounds.y + self.bounds.height as i32) as f64 - 4.0;
+        let cursor_x = text_x + cursor_offset as i32;
+        let cursor_y = self.bounds.y + 6;
+        let cursor_height = self.bounds.height - 12;
 
-        renderer.line(
-            cursor_x,
-            cursor_top,
-            cursor_x,
-            cursor_bottom,
-            theme.selection_background,
-            2.0,
+        // Draw cursor as a filled rectangle
+        renderer.fill_rect(
+            gartk_core::Rect::new(cursor_x, cursor_y, 2, cursor_height),
+            theme.input_cursor,
         )?;
 
         Ok(())
