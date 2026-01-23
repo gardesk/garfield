@@ -1,6 +1,7 @@
 //! List view component for displaying directory contents.
 
 use crate::core::{EntryType, FileEntry, SortDirection, SortOrder};
+use crate::ui::tab::RenameState;
 use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, TextStyle};
 use std::collections::HashSet;
@@ -107,6 +108,11 @@ impl ListView {
     pub fn selected_entry(&self) -> Option<&FileEntry> {
         let visible = self.visible_entries();
         visible.get(self.focused).copied()
+    }
+
+    /// Get the focused index.
+    pub fn focused_index(&self) -> usize {
+        self.focused
     }
 
     /// Get all selected entries.
@@ -490,7 +496,7 @@ impl ListView {
     }
 
     /// Render the list view.
-    pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
+    pub fn render(&self, renderer: &Renderer, rename_state: Option<&RenameState>) -> anyhow::Result<()> {
         let theme = renderer.theme();
         let visible = self.visible_entries();
         let visible_rows = self.visible_rows();
@@ -512,6 +518,7 @@ impl ListView {
             let actual_index = self.scroll_offset + i;
             let is_selected = self.selected.contains(&actual_index);
             let is_focused = actual_index == self.focused;
+            let is_renaming = rename_state.map_or(false, |s| s.index == actual_index);
 
             // Row background
             if is_selected {
@@ -560,26 +567,35 @@ impl ListView {
                 EntryType::Symlink => "\u{1F517} ",
                 _ => "\u{1F4C4} ",
             };
-            let display_name = if entry.is_symlink {
-                if let Some(target) = &entry.symlink_target {
-                    let target_str = target.to_string_lossy();
-                    // Truncate long targets
-                    let target_display = if target_str.len() > 30 {
-                        format!("...{}", &target_str[target_str.len()-27..])
-                    } else {
-                        target_str.to_string()
-                    };
-                    format!("{}{} -> {}", icon, entry.name, target_display)
-                } else {
-                    format!("{}{}", icon, entry.name)
-                }
-            } else {
-                format!("{}{}", icon, entry.name)
-            };
 
             let name_rect =
                 Rect::new(row_rect.x + 8, row_rect.y, self.column_widths[0], ROW_HEIGHT);
-            renderer.text_in_rect(&display_name, name_rect, &name_style)?;
+
+            if is_renaming {
+                // Render rename text field
+                if let Some(state) = rename_state {
+                    self.render_rename_field(renderer, name_rect, state, &icon)?;
+                }
+            } else {
+                let display_name = if entry.is_symlink {
+                    if let Some(target) = &entry.symlink_target {
+                        let target_str = target.to_string_lossy();
+                        // Truncate long targets
+                        let target_display = if target_str.len() > 30 {
+                            format!("...{}", &target_str[target_str.len()-27..])
+                        } else {
+                            target_str.to_string()
+                        };
+                        format!("{}{} -> {}", icon, entry.name, target_display)
+                    } else {
+                        format!("{}{}", icon, entry.name)
+                    }
+                } else {
+                    format!("{}{}", icon, entry.name)
+                };
+
+                renderer.text_in_rect(&display_name, name_rect, &name_style)?;
+            }
 
             // Size
             let size_rect = Rect::new(
@@ -598,6 +614,89 @@ impl ListView {
                 ROW_HEIGHT,
             );
             renderer.text_in_rect(&entry.format_modified(), date_rect, &text_style)?;
+        }
+
+        Ok(())
+    }
+
+    /// Render the inline rename text field.
+    fn render_rename_field(&self, renderer: &Renderer, rect: Rect, state: &RenameState, icon: &str) -> anyhow::Result<()> {
+        let theme = renderer.theme();
+
+        // Background for text field (slightly lighter)
+        let field_rect = Rect::new(
+            rect.x + 24, // After icon
+            rect.y + 2,
+            rect.width.saturating_sub(28),
+            rect.height - 4,
+        );
+        renderer.fill_rounded_rect(field_rect, 2.0, theme.background)?;
+        renderer.stroke_rounded_rect(field_rect, 2.0, theme.selection_background, 1.0)?;
+
+        // Draw icon
+        let icon_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.item_foreground);
+        renderer.text(icon, (rect.x + 4) as f64, (rect.y + 4) as f64, &icon_style)?;
+
+        // Text style for the editable text
+        let text_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.foreground);
+
+        // Draw the text
+        let text_x = field_rect.x + 4;
+        let text_y = field_rect.y + 3;
+        renderer.text(&state.text, text_x as f64, text_y as f64, &text_style)?;
+
+        // Draw cursor
+        let cursor_x = if state.cursor == 0 {
+            text_x as f64
+        } else {
+            let prefix = &state.text[..state.cursor];
+            let prefix_width = renderer.measure_text(prefix, &text_style)?.width;
+            text_x as f64 + prefix_width as f64
+        };
+        renderer.line(
+            cursor_x,
+            (field_rect.y + 2) as f64,
+            cursor_x,
+            (field_rect.y + field_rect.height as i32 - 2) as f64,
+            theme.foreground,
+            1.0,
+        )?;
+
+        // Draw selection highlight if any
+        if let Some(sel_start) = state.selection_start {
+            let (from, to) = if sel_start < state.cursor {
+                (sel_start, state.cursor)
+            } else {
+                (state.cursor, sel_start)
+            };
+
+            let from_x = if from == 0 {
+                text_x as f64
+            } else {
+                let prefix = &state.text[..from];
+                text_x as f64 + renderer.measure_text(prefix, &text_style)?.width as f64
+            };
+
+            let to_x = if to == 0 {
+                text_x as f64
+            } else {
+                let prefix = &state.text[..to];
+                text_x as f64 + renderer.measure_text(prefix, &text_style)?.width as f64
+            };
+
+            let sel_rect = Rect::new(
+                from_x as i32,
+                field_rect.y + 2,
+                (to_x - from_x) as u32,
+                field_rect.height - 4,
+            );
+            renderer.fill_rect(sel_rect, theme.selection_background.with_alpha(0.3))?;
         }
 
         Ok(())

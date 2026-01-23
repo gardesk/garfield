@@ -1,6 +1,7 @@
 //! Grid/icon view for displaying directory contents.
 
 use crate::core::{EntryType, FileEntry, SortDirection, SortOrder};
+use crate::ui::tab::RenameState;
 use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, TextAlign, TextStyle};
 use std::collections::HashSet;
@@ -162,6 +163,11 @@ impl GridView {
     pub fn selected_entry(&self) -> Option<&FileEntry> {
         let visible = self.visible_entries();
         visible.get(self.focused).copied()
+    }
+
+    /// Get the focused index.
+    pub fn focused_index(&self) -> usize {
+        self.focused
     }
 
     /// Get all selected entries.
@@ -473,7 +479,7 @@ impl GridView {
     }
 
     /// Render the grid view.
-    pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
+    pub fn render(&self, renderer: &Renderer, rename_state: Option<&RenameState>) -> anyhow::Result<()> {
         let theme = renderer.theme();
         let visible = self.visible_entries();
         let visible_rows = self.visible_rows();
@@ -496,6 +502,7 @@ impl GridView {
             let is_selected = self.selected.contains(&i);
             let is_focused = i == self.focused;
             let is_hovered = self.hovered == Some(i);
+            let is_renaming = rename_state.map_or(false, |s| s.index == i);
 
             // Cell background
             if is_selected {
@@ -542,27 +549,6 @@ impl GridView {
             let icon_center_y = cell.y + 10 + (icon_font_size / 2.0) as i32;
             renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
 
-            // File name (truncated)
-            let name_color = if is_selected {
-                theme.selection_foreground
-            } else if entry.hidden {
-                theme.item_foreground.with_alpha(0.5)
-            } else {
-                theme.item_foreground
-            };
-
-            let name_font_size = self.icon_size.font_size();
-            let name_style = TextStyle::new()
-                .font_family(&theme.font_family)
-                .font_size(name_font_size)
-                .color(name_color);
-
-            // Use Pango CENTER alignment for proper text centering (like Dolphin/Nautilus)
-            let name_style = name_style.clone()
-                .align(TextAlign::Center)
-                .ellipsize(true)
-                .max_width((cell.width - 8) as i32);
-
             // Rectangle for the text area below the icon
             let icon_size = self.icon_size.icon_size();
             let text_rect = Rect::new(
@@ -571,13 +557,42 @@ impl GridView {
                 cell.width - 8,
                 cell.height - icon_size - 12,
             );
-            // Add "@" suffix for symlinks
-            let display_name = if entry.is_symlink {
-                format!("{}@", entry.name)
+
+            if is_renaming {
+                // Render rename text field
+                if let Some(state) = rename_state {
+                    self.render_rename_field(renderer, text_rect, state)?;
+                }
             } else {
-                entry.name.clone()
-            };
-            renderer.text_in_rect(&display_name, text_rect, &name_style)?;
+                // File name (truncated)
+                let name_color = if is_selected {
+                    theme.selection_foreground
+                } else if entry.hidden {
+                    theme.item_foreground.with_alpha(0.5)
+                } else {
+                    theme.item_foreground
+                };
+
+                let name_font_size = self.icon_size.font_size();
+                let name_style = TextStyle::new()
+                    .font_family(&theme.font_family)
+                    .font_size(name_font_size)
+                    .color(name_color);
+
+                // Use Pango CENTER alignment for proper text centering (like Dolphin/Nautilus)
+                let name_style = name_style.clone()
+                    .align(TextAlign::Center)
+                    .ellipsize(true)
+                    .max_width((cell.width - 8) as i32);
+
+                // Add "@" suffix for symlinks
+                let display_name = if entry.is_symlink {
+                    format!("{}@", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                renderer.text_in_rect(&display_name, text_rect, &name_style)?;
+            }
         }
 
         // Draw rubber band selection rectangle
@@ -587,6 +602,47 @@ impl GridView {
             renderer.fill_rect(band, selection_color)?;
             renderer.stroke_rect(band, border_color, 1.0)?;
         }
+
+        Ok(())
+    }
+
+    /// Render the inline rename text field.
+    fn render_rename_field(&self, renderer: &Renderer, rect: Rect, state: &RenameState) -> anyhow::Result<()> {
+        let theme = renderer.theme();
+
+        // Background for text field
+        let field_rect = Rect::new(rect.x, rect.y, rect.width, 20);
+        renderer.fill_rounded_rect(field_rect, 2.0, theme.background)?;
+        renderer.stroke_rounded_rect(field_rect, 2.0, theme.selection_background, 1.0)?;
+
+        // Text style
+        let text_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(self.icon_size.font_size())
+            .color(theme.foreground);
+
+        // Draw the text (centered)
+        let text_width = renderer.measure_text(&state.text, &text_style)?.width;
+        let text_x = field_rect.x + (field_rect.width as i32 - text_width as i32) / 2;
+        let text_y = field_rect.y + 2;
+        renderer.text(&state.text, text_x as f64, text_y as f64, &text_style)?;
+
+        // Draw cursor
+        let cursor_x = if state.cursor == 0 {
+            text_x as f64
+        } else {
+            let prefix = &state.text[..state.cursor];
+            let prefix_width = renderer.measure_text(prefix, &text_style)?.width;
+            text_x as f64 + prefix_width as f64
+        };
+        renderer.line(
+            cursor_x,
+            (field_rect.y + 2) as f64,
+            cursor_x,
+            (field_rect.y + field_rect.height as i32 - 2) as f64,
+            theme.foreground,
+            1.0,
+        )?;
 
         Ok(())
     }

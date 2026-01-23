@@ -613,6 +613,31 @@ impl App {
             }
         }
 
+        // Handle rename input
+        if self.is_renaming() {
+            match key {
+                Key::Escape => {
+                    self.cancel_rename();
+                    return;
+                }
+                Key::Return => {
+                    self.confirm_rename();
+                    return;
+                }
+                _ => {
+                    // Route other keys to rename handler
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            if tab.handle_rename_key(key) {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Alt+Arrow for history navigation
         if modifiers.alt {
             match key {
@@ -1288,13 +1313,43 @@ impl App {
 
     /// Start inline rename for the selected file.
     fn start_rename(&mut self) {
-        // TODO: Implement inline rename UI
-        // For now, just log that rename was requested
-        if let Some(entry) = self.focused_pane()
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.start_rename();
+            }
+        }
+    }
+
+    /// Check if rename is in progress.
+    fn is_renaming(&self) -> bool {
+        self.focused_pane()
             .and_then(|p| p.active_tab())
-            .and_then(|t| t.selected_entry())
-        {
-            eprintln!("Rename requested for: {}", entry.name);
+            .map_or(false, |t| t.is_renaming())
+    }
+
+    /// Cancel rename operation.
+    fn cancel_rename(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.cancel_rename();
+            }
+        }
+    }
+
+    /// Confirm rename operation.
+    fn confirm_rename(&mut self) {
+        let result = self.focused_pane_mut()
+            .and_then(|p| p.active_tab_mut())
+            .map(|t| t.confirm_rename());
+
+        match result {
+            Some(Ok(new_name)) => {
+                self.status_bar.set_status_message(format!("Renamed to '{}'", new_name));
+            }
+            Some(Err(msg)) => {
+                self.status_bar.set_status_message(format!("Rename failed: {}", msg));
+            }
+            None => {}
         }
     }
 

@@ -22,6 +22,6 @@ pub use list_view::ListView;
 pub use pane::Pane;
 pub use sidebar::Sidebar;
 pub use status_bar::StatusBar;
-pub use tab::{Tab, ViewMode};
+pub use tab::{RenameState, Tab, ViewMode};
 pub use tab_bar::{TabBar, TabInfo, TAB_BAR_HEIGHT};
 pub use toolbar::{Toolbar, ToolbarAction, TOOLBAR_HEIGHT};

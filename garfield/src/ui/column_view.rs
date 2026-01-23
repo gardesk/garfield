@@ -210,6 +210,11 @@ impl ColumnView {
         visible.get(self.current_column.selected).copied()
     }
 
+    /// Get the focused index.
+    pub fn focused_index(&self) -> usize {
+        self.current_column.selected
+    }
+
     /// Get all selected entries.
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
         let visible = self.visible_entries();
