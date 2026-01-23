@@ -43,6 +43,14 @@ pub struct Sidebar {
     bookmarks_section_y: i32,
     /// Whether to show drop highlight on bookmarks section.
     drop_highlight: bool,
+    /// Index of bookmark being dragged for reorder.
+    bookmark_drag_index: Option<usize>,
+    /// Target insert position for bookmark reorder.
+    bookmark_drop_index: Option<usize>,
+    /// Starting position of bookmark drag.
+    bookmark_drag_start: Option<Point>,
+    /// Whether bookmark drag is active (past threshold).
+    bookmark_drag_active: bool,
 }
 
 impl Sidebar {
@@ -64,6 +72,10 @@ impl Sidebar {
             bookmarks_path,
             bookmarks_section_y: 0,
             drop_highlight: false,
+            bookmark_drag_index: None,
+            bookmark_drop_index: None,
+            bookmark_drag_start: None,
+            bookmark_drag_active: false,
         };
         sidebar.populate_default_places();
         sidebar.load_bookmarks();
@@ -344,6 +356,125 @@ impl Sidebar {
         }
     }
 
+    /// Get the bookmark index at a given point (if any).
+    fn bookmark_index_at_point(&self, pos: Point) -> Option<usize> {
+        for (i, bookmark) in self.bookmarks.iter().enumerate() {
+            if bookmark.bounds.contains_point(pos) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Start dragging a bookmark if the position is over one.
+    /// Returns true if drag was started.
+    pub fn start_bookmark_drag(&mut self, pos: Point) -> bool {
+        if !self.visible || !self.bounds.contains_point(pos) {
+            return false;
+        }
+
+        if let Some(index) = self.bookmark_index_at_point(pos) {
+            self.bookmark_drag_index = Some(index);
+            self.bookmark_drag_start = Some(pos);
+            self.bookmark_drag_active = false;
+            self.bookmark_drop_index = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update bookmark drag state with current mouse position.
+    /// Returns true if drag is active.
+    pub fn update_bookmark_drag(&mut self, pos: Point) -> bool {
+        if self.bookmark_drag_index.is_none() {
+            return false;
+        }
+
+        // Check if past drag threshold
+        if !self.bookmark_drag_active {
+            if let Some(start) = self.bookmark_drag_start {
+                let dx = (pos.x - start.x).abs();
+                let dy = (pos.y - start.y).abs();
+                if dx > 5 || dy > 5 {
+                    self.bookmark_drag_active = true;
+                }
+            }
+        }
+
+        if !self.bookmark_drag_active {
+            return false;
+        }
+
+        // Calculate drop index based on mouse position
+        if pos.y < self.bookmarks_section_y || !self.bounds.contains_point(pos) {
+            self.bookmark_drop_index = None;
+        } else {
+            // Find which slot we're closest to
+            let mut drop_index = 0;
+            for (i, bookmark) in self.bookmarks.iter().enumerate() {
+                let mid_y = bookmark.bounds.y + bookmark.bounds.height as i32 / 2;
+                if pos.y > mid_y {
+                    drop_index = i + 1;
+                }
+            }
+            self.bookmark_drop_index = Some(drop_index);
+        }
+
+        true
+    }
+
+    /// Complete bookmark drag and reorder.
+    /// Returns true if reorder occurred.
+    pub fn complete_bookmark_drag(&mut self) -> bool {
+        let result = if self.bookmark_drag_active {
+            if let (Some(from), Some(to)) = (self.bookmark_drag_index, self.bookmark_drop_index) {
+                if from != to && to != from + 1 && !self.bookmarks.is_empty() {
+                    // Perform the reorder
+                    let bookmark = self.bookmarks.remove(from);
+                    let new_index = if to > from { to - 1 } else { to };
+                    self.bookmarks.insert(new_index, bookmark);
+                    self.save_bookmarks();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        self.cancel_bookmark_drag();
+        result
+    }
+
+    /// Cancel bookmark drag.
+    pub fn cancel_bookmark_drag(&mut self) {
+        self.bookmark_drag_index = None;
+        self.bookmark_drop_index = None;
+        self.bookmark_drag_start = None;
+        self.bookmark_drag_active = false;
+    }
+
+    /// Check if bookmark drag is in progress.
+    pub fn is_bookmark_dragging(&self) -> bool {
+        self.bookmark_drag_active
+    }
+
+    /// Get the index of the bookmark being dragged (for checking if a click was on a bookmark).
+    pub fn bookmark_drag_index(&self) -> Option<usize> {
+        self.bookmark_drag_index
+    }
+
+    /// Get the path of the bookmark at the current drag index.
+    pub fn bookmark_path_at_index(&self) -> Option<PathBuf> {
+        self.bookmark_drag_index
+            .and_then(|i| self.bookmarks.get(i))
+            .map(|b| b.path.clone())
+    }
+
     /// Update bounds.
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
@@ -565,11 +696,27 @@ impl Sidebar {
                 .font_size(theme.font_size - 2.0)
                 .color(theme.item_foreground.with_alpha(0.4));
             renderer.text("Ctrl+D to add", (header_x + 4) as f64, y as f64, &hint_style)?;
+
+            // Draw drop indicator at start if dragging (shouldn't happen but be safe)
+            if self.bookmark_drag_active && self.bookmark_drop_index == Some(0) {
+                self.render_drop_indicator(renderer, y)?;
+            }
         } else {
             for i in 0..self.bookmarks.len() {
+                // Draw drop indicator before this item if needed
+                if self.bookmark_drag_active && self.bookmark_drop_index == Some(i) {
+                    self.render_drop_indicator(renderer, y)?;
+                }
+
                 let combined_index = self.places.len() + i;
                 let is_hovered = self.hovered == Some(combined_index);
-                y = self.render_item(renderer, combined_index, y, is_hovered, &icon_style, &name_style, &hover_style)?;
+                let is_dragging = self.bookmark_drag_index == Some(i);
+                y = self.render_bookmark_item(renderer, combined_index, y, is_hovered, is_dragging, &icon_style, &name_style, &hover_style)?;
+            }
+
+            // Draw drop indicator at end if needed
+            if self.bookmark_drag_active && self.bookmark_drop_index == Some(self.bookmarks.len()) {
+                self.render_drop_indicator(renderer, y)?;
             }
         }
 
@@ -625,5 +772,81 @@ impl Sidebar {
         renderer.text(&name, name_x as f64, text_y as f64, text_style)?;
 
         Ok(y + self.item_height as i32)
+    }
+
+    /// Render a bookmark item (supports dimming when being dragged).
+    fn render_bookmark_item(
+        &mut self,
+        renderer: &Renderer,
+        index: usize,
+        y: i32,
+        is_hovered: bool,
+        is_dragging: bool,
+        icon_style: &TextStyle,
+        name_style: &TextStyle,
+        hover_style: &TextStyle,
+    ) -> anyhow::Result<i32> {
+        let theme = renderer.theme();
+
+        // Get item (need to reborrow to avoid issues)
+        let (icon, name) = {
+            let item = self.get_item(index).unwrap();
+            (item.icon.clone(), item.name.clone())
+        };
+
+        // Update bounds for hit testing
+        let item_bounds = Rect::new(
+            self.bounds.x,
+            y,
+            self.bounds.width,
+            self.item_height,
+        );
+
+        // Store bounds
+        if let Some(item) = self.get_item_mut(index) {
+            item.bounds = item_bounds;
+        }
+
+        // Draw hover background (unless being dragged)
+        if is_hovered && !is_dragging {
+            renderer.fill_rect(item_bounds, theme.item_background)?;
+        }
+
+        // Dim if being dragged
+        let alpha = if is_dragging { 0.4 } else { 1.0 };
+
+        let text_style = if is_hovered && !is_dragging {
+            hover_style.clone()
+        } else {
+            name_style.clone().color(theme.item_foreground.with_alpha(alpha))
+        };
+
+        let icon_style = icon_style.clone().color(theme.item_foreground.with_alpha(0.7 * alpha));
+
+        // Draw icon
+        let icon_x = self.bounds.x + self.padding as i32;
+        let text_y = y + (self.item_height as i32 - theme.font_size as i32) / 2;
+        renderer.text(&icon, icon_x as f64, text_y as f64, &icon_style)?;
+
+        // Draw name
+        let name_x = icon_x + 20;
+        renderer.text(&name, name_x as f64, text_y as f64, &text_style)?;
+
+        Ok(y + self.item_height as i32)
+    }
+
+    /// Render a drop indicator line.
+    fn render_drop_indicator(&self, renderer: &Renderer, y: i32) -> anyhow::Result<()> {
+        let theme = renderer.theme();
+        let line_y = y - 2;
+        renderer.line(
+            (self.bounds.x + self.padding as i32) as f64,
+            line_y as f64,
+            (self.bounds.x + self.bounds.width as i32 - self.padding as i32) as f64,
+            line_y as f64,
+            theme.selection_background,
+            2.0,
+        )?;
+        Ok(())
     }
 }

@@ -305,7 +305,13 @@ impl App {
             return;
         }
 
-        // Check sidebar clicks
+        // Check sidebar clicks - try to start bookmark drag first
+        if self.sidebar.start_bookmark_drag(pos) {
+            // Started potential bookmark drag, don't navigate yet
+            return;
+        }
+
+        // Check sidebar clicks (for non-bookmark items)
         if let Some(path) = self.sidebar.on_click(pos) {
             self.navigate_to(path);
             return;
@@ -408,7 +414,18 @@ impl App {
 
     /// Handle mouse release.
     fn handle_mouse_release(&mut self, pos: Point) {
-        // Handle bookmark drag drop
+        // Handle bookmark reorder drag completion
+        if self.sidebar.is_bookmark_dragging() {
+            self.sidebar.complete_bookmark_drag();
+        } else if self.sidebar.bookmark_drag_index().is_some() {
+            // Clicked on bookmark but didn't drag - navigate to it
+            if let Some(path) = self.sidebar.bookmark_path_at_index() {
+                self.navigate_to(path);
+            }
+            self.sidebar.cancel_bookmark_drag();
+        }
+
+        // Handle bookmark drag drop (dragging from file view to sidebar)
         if self.drag_active {
             if let Some(path) = self.drag_source_path.take() {
                 if self.sidebar.is_bookmark_drop_zone(pos) {
@@ -467,7 +484,12 @@ impl App {
             }
         }
 
-        // Handle bookmark drag in progress
+        // Handle bookmark reorder drag in progress
+        if self.sidebar.bookmark_drag_index().is_some() {
+            self.sidebar.update_bookmark_drag(pos);
+        }
+
+        // Handle bookmark drag in progress (dragging from file view)
         if self.drag_source_path.is_some() {
             // Update current drag position for visual feedback
             self.drag_current_pos = Some(pos);
