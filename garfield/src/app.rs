@@ -7,6 +7,7 @@ use gartk_core::{InputEvent, Key, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
+use std::time::Instant;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
 
 /// Height of the breadcrumb bar.
@@ -50,6 +51,10 @@ pub struct App {
     should_quit: bool,
     /// Pane divider resize in progress (split pane pointer path).
     pane_resize_path: Option<Vec<bool>>,
+    /// Last click time for double-click detection.
+    last_click_time: Option<Instant>,
+    /// Last click position for double-click detection.
+    last_click_pos: Option<Point>,
 }
 
 impl App {
@@ -175,6 +180,8 @@ impl App {
             help_modal,
             should_quit: false,
             pane_resize_path: None,
+            last_click_time: None,
+            last_click_pos: None,
         };
 
         app.update_status_bar();
@@ -329,9 +336,32 @@ impl App {
             }
         }
 
-        if let Some(pane) = self.focused_pane_mut() {
-            if let Some(tab) = pane.active_tab_mut() {
-                tab.on_click(pos, modifiers);
+        // Check for double-click to enter directory
+        let now = Instant::now();
+        let is_double_click = if let (Some(last_time), Some(last_pos)) = (self.last_click_time, self.last_click_pos) {
+            let elapsed = now.duration_since(last_time);
+            let distance = ((pos.x - last_pos.x).pow(2) + (pos.y - last_pos.y).pow(2)) as f64;
+            elapsed.as_millis() < 400 && distance.sqrt() < 5.0
+        } else {
+            false
+        };
+
+        // Update click tracking
+        self.last_click_time = Some(now);
+        self.last_click_pos = Some(pos);
+
+        if is_double_click {
+            // Double-click: enter the selected item
+            self.enter_selected();
+            // Clear click tracking to prevent triple-click
+            self.last_click_time = None;
+            self.last_click_pos = None;
+        } else {
+            // Single click: handle selection
+            if let Some(pane) = self.focused_pane_mut() {
+                if let Some(tab) = pane.active_tab_mut() {
+                    tab.on_click(pos, modifiers);
+                }
             }
         }
     }
@@ -506,11 +536,15 @@ impl App {
                     return;
                 }
                 Key::Char('d') | Key::Char('D') => {
-                    if let Some(pane) = self.focused_pane() {
-                        if let Some(tab) = pane.active_tab() {
-                            let current = tab.current_path().clone();
-                            self.sidebar.toggle_bookmark(&current);
-                        }
+                    // Bookmark the selected item (must be a directory)
+                    let bookmark_path = self.focused_pane()
+                        .and_then(|pane| pane.active_tab())
+                        .and_then(|tab| tab.selected_entry())
+                        .filter(|e| e.is_dir())
+                        .map(|e| e.path.clone());
+
+                    if let Some(path) = bookmark_path {
+                        self.sidebar.toggle_bookmark(&path);
                     }
                     return;
                 }
@@ -1059,6 +1093,9 @@ impl App {
 
         // Draw status bar
         self.status_bar.render(&self.renderer)?;
+
+        // Draw toolbar tooltip overlay (on top of other UI)
+        self.toolbar.render_tooltip_overlay(&self.renderer)?;
 
         // Draw help modal overlay (on top of everything)
         self.help_modal.render(&self.renderer)?;
