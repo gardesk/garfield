@@ -1103,11 +1103,12 @@ impl App {
     fn update_status_bar(&mut self) {
         let stats = self.focused_pane()
             .and_then(|pane| pane.active_tab())
-            .map(|tab| (tab.visible_count(), tab.selection_count(), tab.selected_size(), tab.view_mode().name()));
+            .map(|tab| (tab.visible_count(), tab.selection_count(), tab.selected_size(), tab.view_mode().name(), tab.current_path().to_path_buf()));
 
-        if let Some((visible_count, selected_count, selected_size, view_mode)) = stats {
+        if let Some((visible_count, selected_count, selected_size, view_mode, path)) = stats {
             self.status_bar.update(visible_count, selected_count, selected_size);
             self.status_bar.set_view_mode(view_mode);
+            self.status_bar.update_free_space(&path);
         }
     }
 

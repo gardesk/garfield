@@ -2,6 +2,8 @@
 
 use gartk_core::Rect;
 use gartk_render::{Renderer, TextStyle};
+use std::ffi::CString;
+use std::path::Path;
 
 /// Height of the status bar.
 pub const STATUS_BAR_HEIGHT: u32 = 24;
@@ -18,6 +20,8 @@ pub struct StatusBar {
     selected_size: u64,
     /// Current view mode name.
     view_mode: String,
+    /// Free disk space in bytes.
+    free_space: Option<u64>,
 }
 
 impl StatusBar {
@@ -29,6 +33,7 @@ impl StatusBar {
             selected_count: 0,
             selected_size: 0,
             view_mode: "List".to_string(),
+            free_space: None,
         }
     }
 
@@ -47,6 +52,11 @@ impl StatusBar {
     /// Set the current view mode name.
     pub fn set_view_mode(&mut self, mode: &str) {
         self.view_mode = mode.to_string();
+    }
+
+    /// Update free disk space for the given path.
+    pub fn update_free_space(&mut self, path: &Path) {
+        self.free_space = get_free_space(path);
     }
 
     /// Get status bar height.
@@ -104,10 +114,21 @@ impl StatusBar {
             &text_style,
         )?;
 
-        // Right side: view mode
+        // Right side: free space and view mode
+        let mut right_x = self.bounds.x + self.bounds.width as i32 - padding;
+
+        // View mode
         let mode_width = renderer.measure_text(&self.view_mode, &text_style)?.width;
-        let mode_x = self.bounds.x + self.bounds.width as i32 - mode_width as i32 - padding;
-        renderer.text(&self.view_mode, mode_x as f64, text_y as f64, &text_style)?;
+        right_x -= mode_width as i32;
+        renderer.text(&self.view_mode, right_x as f64, text_y as f64, &text_style)?;
+
+        // Free space (if available)
+        if let Some(free) = self.free_space {
+            let free_text = format!("{} free  |  ", format_bytes(free));
+            let free_width = renderer.measure_text(&free_text, &text_style)?.width;
+            right_x -= free_width as i32;
+            renderer.text(&free_text, right_x as f64, text_y as f64, &text_style)?;
+        }
 
         Ok(())
     }
@@ -130,5 +151,20 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+/// Get free disk space for the filesystem containing the given path.
+fn get_free_space(path: &Path) -> Option<u64> {
+    let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            // Available blocks * block size = free space for non-privileged users
+            Some(stat.f_bavail as u64 * stat.f_bsize as u64)
+        } else {
+            None
+        }
     }
 }

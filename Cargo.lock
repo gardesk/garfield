@@ -331,6 +331,7 @@ dependencies = [
  "gartk-core",
  "gartk-render",
  "gartk-x11",
+ "libc",
  "serde",
  "serde_json",
  "thiserror",
