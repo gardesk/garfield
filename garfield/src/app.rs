@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, Pane, Sidebar, StatusBar, TabBar, TabInfo, ViewMode, TAB_BAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
@@ -26,6 +26,8 @@ pub struct App {
     renderer: Renderer,
     /// Graphics context for blitting.
     gc: u32,
+    /// Toolbar with action buttons.
+    toolbar: Toolbar,
     /// Breadcrumb path bar.
     breadcrumb: Breadcrumb,
     /// Address bar for path editing.
@@ -89,11 +91,22 @@ impl App {
         let current_dir = start_dir
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
-        // Create breadcrumb
         let sidebar_w = SIDEBAR_WIDTH;
-        let breadcrumb_bounds = Rect::new(
+        let header_height = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT + BREADCRUMB_HEIGHT;
+
+        // Create toolbar (below tab bar)
+        let toolbar_bounds = Rect::new(
             sidebar_w as i32,
             TAB_BAR_HEIGHT as i32,
+            width - sidebar_w,
+            TOOLBAR_HEIGHT,
+        );
+        let toolbar = Toolbar::new(toolbar_bounds);
+
+        // Create breadcrumb (below toolbar)
+        let breadcrumb_bounds = Rect::new(
+            sidebar_w as i32,
+            (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) as i32,
             width - sidebar_w,
             BREADCRUMB_HEIGHT,
         );
@@ -124,9 +137,9 @@ impl App {
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
-            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as i32,
+            header_height as i32,
             width - sidebar_w,
-            height - TAB_BAR_HEIGHT - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
+            height - header_height - STATUS_BAR_HEIGHT,
         );
 
         // Create root pane with initial tab
@@ -145,6 +158,7 @@ impl App {
             window,
             renderer,
             gc,
+            toolbar,
             breadcrumb,
             address_bar,
             sidebar,
@@ -200,6 +214,7 @@ impl App {
                     ev.request_redraw();
                 }
                 InputEvent::MouseLeave => {
+                    self.toolbar.clear_hover();
                     self.breadcrumb.clear_hover();
                     self.sidebar.clear_hover();
                     self.tab_bar.clear_hover();
@@ -244,6 +259,12 @@ impl App {
             } else {
                 self.switch_tab(tab_index);
             }
+            return;
+        }
+
+        // Check toolbar clicks
+        if let Some(action) = self.toolbar.on_click(pos) {
+            self.handle_toolbar_action(action);
             return;
         }
 
@@ -338,6 +359,7 @@ impl App {
             }
         }
 
+        self.toolbar.on_mouse_move(pos);
         self.breadcrumb.on_mouse_move(pos);
         self.sidebar.on_mouse_move(pos);
         self.tab_bar.on_mouse_move(pos);
@@ -824,7 +846,37 @@ impl App {
             }
         }
         self.status_bar.set_view_mode(mode.name());
+        self.sync_toolbar_view();
         self.update_status_bar();
+    }
+
+    /// Handle a toolbar action.
+    fn handle_toolbar_action(&mut self, action: ToolbarAction) {
+        match action {
+            ToolbarAction::ViewList => self.set_view_mode(ViewMode::List),
+            ToolbarAction::ViewGrid => self.set_view_mode(ViewMode::Grid),
+            ToolbarAction::ViewColumns => self.set_view_mode(ViewMode::Columns),
+            ToolbarAction::NewTab => self.new_tab(),
+            ToolbarAction::SplitHorizontal => self.split_horizontal(),
+            ToolbarAction::SplitVertical => self.split_vertical(),
+            ToolbarAction::GoBack => self.go_back(),
+            ToolbarAction::GoForward => self.go_forward(),
+            ToolbarAction::GoUp => self.go_up(),
+        }
+    }
+
+    /// Sync toolbar active view with current tab's view mode.
+    fn sync_toolbar_view(&mut self) {
+        if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                let action = match tab.view_mode() {
+                    ViewMode::List => ToolbarAction::ViewList,
+                    ViewMode::Grid => ToolbarAction::ViewGrid,
+                    ViewMode::Columns => ToolbarAction::ViewColumns,
+                };
+                self.toolbar.set_active_view(action);
+            }
+        }
     }
 
     // === Sync helpers ===
@@ -871,6 +923,7 @@ impl App {
     /// Update layout.
     fn update_layout(&mut self, width: u32, height: u32) {
         let sidebar_w = self.sidebar.width();
+        let header_height = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT + BREADCRUMB_HEIGHT;
 
         self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
 
@@ -881,9 +934,16 @@ impl App {
             TAB_BAR_HEIGHT,
         ));
 
-        let breadcrumb_bounds = Rect::new(
+        self.toolbar.set_bounds(Rect::new(
             sidebar_w as i32,
             TAB_BAR_HEIGHT as i32,
+            width - sidebar_w,
+            TOOLBAR_HEIGHT,
+        ));
+
+        let breadcrumb_bounds = Rect::new(
+            sidebar_w as i32,
+            (TAB_BAR_HEIGHT + TOOLBAR_HEIGHT) as i32,
             width - sidebar_w,
             BREADCRUMB_HEIGHT,
         );
@@ -892,9 +952,9 @@ impl App {
 
         let content_bounds = Rect::new(
             sidebar_w as i32,
-            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as i32,
+            header_height as i32,
             width - sidebar_w,
-            height - TAB_BAR_HEIGHT - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
+            height - header_height - STATUS_BAR_HEIGHT,
         );
         self.root_pane.set_bounds(content_bounds);
 
@@ -911,6 +971,7 @@ impl App {
         let theme = self.renderer.theme().clone();
         let size = self.renderer.size();
         let sidebar_w = self.sidebar.width();
+        let header_height = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT + BREADCRUMB_HEIGHT;
 
         // Clear background
         self.renderer.clear()?;
@@ -921,28 +982,32 @@ impl App {
         // Draw tab bar
         self.tab_bar.render(&self.renderer)?;
 
+        // Update and draw toolbar
+        let (can_back, can_forward) = if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                (tab.can_go_back(), tab.can_go_forward())
+            } else {
+                (false, false)
+            }
+        } else {
+            (false, false)
+        };
+        self.toolbar.set_nav_state(can_back, can_forward);
+        self.toolbar.render(&self.renderer)?;
+
         // Draw breadcrumb or address bar
         if self.address_bar.is_active() {
             self.address_bar.render(&self.renderer)?;
         } else {
-            let (can_back, can_forward) = if let Some(pane) = self.focused_pane() {
-                if let Some(tab) = pane.active_tab() {
-                    (tab.can_go_back(), tab.can_go_forward())
-                } else {
-                    (false, false)
-                }
-            } else {
-                (false, false)
-            };
             self.breadcrumb.render(&self.renderer, can_back, can_forward)?;
         }
 
         // Draw separator line under breadcrumb
         self.renderer.line(
             sidebar_w as f64,
-            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as f64,
+            header_height as f64,
             size.width as f64,
-            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as f64,
+            header_height as f64,
             theme.border,
             1.0,
         )?;
