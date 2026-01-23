@@ -10,6 +10,7 @@ pub mod sidebar;
 pub mod status_bar;
 pub mod tab;
 pub mod tab_bar;
+pub mod toolbar;
 
 pub use address_bar::AddressBar;
 pub use breadcrumb::Breadcrumb;
@@ -21,3 +22,4 @@ pub use sidebar::Sidebar;
 pub use status_bar::StatusBar;
 pub use tab::{Tab, ViewMode};
 pub use tab_bar::{TabBar, TabInfo, TAB_BAR_HEIGHT};
+pub use toolbar::{Toolbar, ToolbarAction, TOOLBAR_HEIGHT};
