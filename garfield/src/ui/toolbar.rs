@@ -418,18 +418,12 @@ impl Toolbar {
     }
 
     fn draw_help_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
-        // Question mark shape
-        // Arc at top (simplified as lines)
-        let r = 4.0;
-        renderer.line(cx - r, cy - r + 1.0, cx - r + 2.0, cy - r - 2.0, color, 2.0)?;
-        renderer.line(cx - r + 2.0, cy - r - 2.0, cx + r - 2.0, cy - r - 2.0, color, 2.0)?;
-        renderer.line(cx + r - 2.0, cy - r - 2.0, cx + r, cy - r + 1.0, color, 2.0)?;
-        renderer.line(cx + r, cy - r + 1.0, cx + 1.0, cy, color, 2.0)?;
-        // Stem
-        renderer.line(cx, cy, cx, cy + 2.0, color, 2.0)?;
-        // Dot
-        let dot_rect = Rect::new((cx - 1.0) as i32, (cy + 4.0) as i32, 2, 2);
-        renderer.fill_rect(dot_rect, color)?;
+        // Draw "?" character using text
+        let style = TextStyle::new()
+            .font_family("monospace")
+            .font_size(16.0)
+            .color(color);
+        renderer.text("?", cx - 4.0, cy - 8.0, &style)?;
         Ok(())
     }
 }
