@@ -486,6 +486,28 @@ impl Pane {
         }
     }
 
+    /// Reorder a tab from one position to another.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) {
+        if let Pane::Leaf { tabs, active_tab, .. } = self {
+            if from >= tabs.len() || to > tabs.len() {
+                return;
+            }
+
+            let tab = tabs.remove(from);
+            let new_index = if to > from { to - 1 } else { to };
+            tabs.insert(new_index, tab);
+
+            // Update active tab index if affected
+            if *active_tab == from {
+                *active_tab = new_index;
+            } else if from < *active_tab && new_index >= *active_tab {
+                *active_tab = active_tab.saturating_sub(1);
+            } else if from > *active_tab && new_index <= *active_tab {
+                *active_tab = (*active_tab + 1).min(tabs.len() - 1);
+            }
+        }
+    }
+
     /// Get tab count.
     pub fn tab_count(&self) -> usize {
         match self {

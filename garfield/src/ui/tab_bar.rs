@@ -41,6 +41,14 @@ pub struct TabBar {
     hovered_close: Option<usize>,
     /// Cached tab bounds.
     tab_bounds: Vec<Rect>,
+    /// Tab being dragged (index).
+    dragging_tab: Option<usize>,
+    /// Drag start position.
+    drag_start: Option<Point>,
+    /// Whether drag is active (past threshold).
+    drag_active: bool,
+    /// Target drop position for reorder.
+    drop_target: Option<usize>,
 }
 
 impl TabBar {
@@ -53,6 +61,10 @@ impl TabBar {
             hovered_tab: None,
             hovered_close: None,
             tab_bounds: Vec::new(),
+            dragging_tab: None,
+            drag_start: None,
+            drag_active: false,
+            drop_target: None,
         }
     }
 
@@ -164,6 +176,107 @@ impl TabBar {
         self.hovered_close = None;
     }
 
+    /// Start potential tab drag.
+    pub fn start_drag(&mut self, pos: Point) -> bool {
+        if !self.bounds.contains_point(pos) {
+            return false;
+        }
+
+        for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
+            if tab_bounds.contains_point(pos) {
+                // Don't drag if clicking close button
+                if let Some(close_bounds) = self.close_button_bounds(i) {
+                    if close_bounds.contains_point(pos) {
+                        return false;
+                    }
+                }
+                self.dragging_tab = Some(i);
+                self.drag_start = Some(pos);
+                self.drag_active = false;
+                self.drop_target = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Update tab drag with current mouse position.
+    /// Returns true if drag is active.
+    pub fn update_drag(&mut self, pos: Point) -> bool {
+        if self.dragging_tab.is_none() {
+            return false;
+        }
+
+        // Check if past drag threshold
+        if !self.drag_active {
+            if let Some(start) = self.drag_start {
+                let dx = (pos.x - start.x).abs();
+                if dx > 5 {
+                    self.drag_active = true;
+                }
+            }
+        }
+
+        if !self.drag_active {
+            return false;
+        }
+
+        // Calculate drop target based on position
+        if !self.bounds.contains_point(pos) {
+            self.drop_target = None;
+        } else {
+            // Find which slot we're closest to
+            let mut target = 0;
+            for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
+                let mid_x = tab_bounds.x + tab_bounds.width as i32 / 2;
+                if pos.x > mid_x {
+                    target = i + 1;
+                }
+            }
+            self.drop_target = Some(target);
+        }
+
+        true
+    }
+
+    /// Complete tab drag and return reorder info if any (from, to).
+    pub fn complete_drag(&mut self) -> Option<(usize, usize)> {
+        let result = if self.drag_active {
+            if let (Some(from), Some(to)) = (self.dragging_tab, self.drop_target) {
+                if from != to && to != from + 1 {
+                    Some((from, to))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        self.cancel_drag();
+        result
+    }
+
+    /// Cancel tab drag.
+    pub fn cancel_drag(&mut self) {
+        self.dragging_tab = None;
+        self.drag_start = None;
+        self.drag_active = false;
+        self.drop_target = None;
+    }
+
+    /// Check if currently dragging.
+    pub fn is_dragging(&self) -> bool {
+        self.drag_active
+    }
+
+    /// Get dragging tab index.
+    pub fn dragging_tab(&self) -> Option<usize> {
+        self.dragging_tab
+    }
+
     /// Render the tab bar.
     pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
         let theme = renderer.theme();
@@ -185,6 +298,26 @@ impl TabBar {
         for (i, (tab, bounds)) in self.tabs.iter().zip(self.tab_bounds.iter()).enumerate() {
             let is_active = i == self.active_index;
             let is_hovered = self.hovered_tab == Some(i);
+            let is_being_dragged = self.drag_active && self.dragging_tab == Some(i);
+
+            // Dim the tab being dragged
+            if is_being_dragged {
+                renderer.fill_rect(*bounds, theme.item_background.with_alpha(0.3))?;
+                continue; // Skip rest of rendering for dragged tab
+            }
+
+            // Draw drop indicator before this tab if needed
+            if self.drag_active && self.drop_target == Some(i) {
+                let indicator_x = bounds.x - 2;
+                renderer.line(
+                    indicator_x as f64,
+                    (bounds.y + 4) as f64,
+                    indicator_x as f64,
+                    (bounds.y + bounds.height as i32 - 4) as f64,
+                    theme.selection_background,
+                    3.0,
+                )?;
+            }
 
             // Tab background
             if is_active {
@@ -282,6 +415,21 @@ impl TabBar {
                     (bounds.y + bounds.height as i32 - 8) as f64,
                     theme.border.with_alpha(0.3),
                     1.0,
+                )?;
+            }
+        }
+
+        // Draw drop indicator at end if dropping after last tab
+        if self.drag_active && self.drop_target == Some(self.tabs.len()) {
+            if let Some(last_bounds) = self.tab_bounds.last() {
+                let indicator_x = last_bounds.x + last_bounds.width as i32 + 2;
+                renderer.line(
+                    indicator_x as f64,
+                    (last_bounds.y + 4) as f64,
+                    indicator_x as f64,
+                    (last_bounds.y + last_bounds.height as i32 - 4) as f64,
+                    theme.selection_background,
+                    3.0,
                 )?;
             }
         }

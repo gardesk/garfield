@@ -289,13 +289,18 @@ impl App {
             return;
         }
 
-        // Check tab bar clicks
+        // Check tab bar clicks - try to start tab drag first
+        if self.tab_bar.start_drag(pos) {
+            // Started potential tab drag, don't switch yet
+            return;
+        }
+
+        // Handle tab bar close button clicks (non-drag)
         if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
             if is_close {
                 self.close_tab(tab_index);
-            } else {
-                self.switch_tab(tab_index);
             }
+            // Tab selection happens on mouse release if not dragged
             return;
         }
 
@@ -414,6 +419,19 @@ impl App {
 
     /// Handle mouse release.
     fn handle_mouse_release(&mut self, pos: Point) {
+        // Handle tab reorder drag completion
+        if self.tab_bar.is_dragging() {
+            if let Some((from, to)) = self.tab_bar.complete_drag() {
+                self.reorder_tab(from, to);
+            }
+        } else if self.tab_bar.dragging_tab().is_some() {
+            // Clicked on tab but didn't drag - select it
+            if let Some(index) = self.tab_bar.dragging_tab() {
+                self.switch_tab(index);
+            }
+            self.tab_bar.cancel_drag();
+        }
+
         // Handle bookmark reorder drag completion
         if self.sidebar.is_bookmark_dragging() {
             self.sidebar.complete_bookmark_drag();
@@ -482,6 +500,11 @@ impl App {
                 }
                 return;
             }
+        }
+
+        // Handle tab reorder drag in progress
+        if self.tab_bar.dragging_tab().is_some() {
+            self.tab_bar.update_drag(pos);
         }
 
         // Handle bookmark reorder drag in progress
@@ -844,6 +867,17 @@ impl App {
     fn switch_tab(&mut self, index: usize) {
         if let Some(pane) = self.focused_pane_mut() {
             pane.set_active_tab(index);
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Reorder a tab from one position to another.
+    fn reorder_tab(&mut self, from: usize, to: usize) {
+        if let Some(pane) = self.focused_pane_mut() {
+            pane.reorder_tab(from, to);
         }
 
         self.sync_tab_bar();
