@@ -478,7 +478,9 @@ impl Tab {
     }
 
     /// Confirm rename operation. Returns Ok(new_name) on success, Err(message) on failure.
-    pub fn confirm_rename(&mut self) -> Result<String, String> {
+    /// Confirm and perform the rename.
+    /// Returns (original_path, new_path, new_name) on success.
+    pub fn confirm_rename(&mut self) -> Result<(PathBuf, PathBuf, String), String> {
         let state = match self.renaming.take() {
             Some(s) => s,
             None => return Err("No rename in progress".to_string()),
@@ -491,9 +493,14 @@ impl Tab {
             return Err("Name cannot be empty".to_string());
         }
 
+        // Get the entry path
+        let visible = self.visible_entries();
+        let entry = visible.get(state.index).ok_or("Entry not found")?;
+        let entry_path = entry.path.clone();
+
         if new_name == state.original {
             // No change, just cancel silently
-            return Ok(state.original);
+            return Ok((entry_path.clone(), entry_path, state.original));
         }
 
         // Validate: no path separators
@@ -501,16 +508,11 @@ impl Tab {
             return Err("Name cannot contain path separators".to_string());
         }
 
-        // Get the entry path
-        let visible = self.visible_entries();
-        let entry = visible.get(state.index).ok_or("Entry not found")?;
-        let entry_path = entry.path.clone();
-
         // Perform the rename
         match rename_path(&entry_path, new_name) {
-            Ok(_) => {
+            Ok(new_path) => {
                 self.refresh();
-                Ok(new_name.to_string())
+                Ok((entry_path, new_path, new_name.to_string()))
             }
             Err(e) => Err(e.to_string()),
         }

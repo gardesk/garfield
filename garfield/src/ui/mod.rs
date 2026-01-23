@@ -15,7 +15,7 @@ pub mod tab_bar;
 pub mod toolbar;
 
 pub use address_bar::AddressBar;
-pub use dialog::{ConfirmDialog, DialogResult};
+pub use dialog::{ConfirmDialog, DialogResult, ProgressDialog, ProgressInfo};
 pub use breadcrumb::Breadcrumb;
 pub use column_view::{ColumnClickResult, ColumnView};
 pub use grid_view::GridView;

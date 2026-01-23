@@ -57,6 +57,8 @@ const KEYBINDS: &[(&str, &[KeybindEntry])] = &[
         KeybindEntry { key: "Ctrl+C", description: "Copy" },
         KeybindEntry { key: "Ctrl+X", description: "Cut" },
         KeybindEntry { key: "Ctrl+V", description: "Paste" },
+        KeybindEntry { key: "Ctrl+Z", description: "Undo" },
+        KeybindEntry { key: "Ctrl+Y", description: "Redo" },
         KeybindEntry { key: "Delete", description: "Move to trash" },
         KeybindEntry { key: "Shift+Delete", description: "Delete permanently" },
         KeybindEntry { key: "F2", description: "Rename" },

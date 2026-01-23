@@ -5,6 +5,7 @@ pub mod entry;
 pub mod history;
 pub mod operations;
 pub mod trash;
+pub mod undo;
 
 pub use clipboard::{Clipboard, ClipboardOperation};
 pub use entry::{
@@ -16,3 +17,4 @@ pub use operations::{
     make_unique_name, move_files, move_path, rename_path, OperationResult,
 };
 pub use trash::{empty_trash, restore_from_trash, trash_file, trash_files, trash_dir};
+pub use undo::{FileOperation, UndoStack};

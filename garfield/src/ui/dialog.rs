@@ -1,8 +1,9 @@
-//! Modal dialog component for confirmations.
+//! Modal dialog components for confirmations and progress.
 
 use anyhow::Result;
 use gartk_core::{Key, Point, Rect};
 use gartk_render::{Renderer, TextStyle};
+use std::time::Instant;
 
 /// Dialog button type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +281,304 @@ impl ConfirmDialog {
         let cancel_text_width = renderer.measure_text(&self.cancel_label, &button_style)?.width;
         let cancel_text_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_text_width as i32) / 2;
         renderer.text(&self.cancel_label, cancel_text_x as f64, button_text_y as f64, &button_style)?;
+
+        Ok(())
+    }
+}
+
+/// Progress information for an operation.
+#[derive(Debug, Clone)]
+pub struct ProgressInfo {
+    /// Current item being processed.
+    pub current_item: String,
+    /// Current item index (1-based).
+    pub current: usize,
+    /// Total items.
+    pub total: usize,
+    /// Bytes processed (for copy/move).
+    pub bytes_done: u64,
+    /// Total bytes (for copy/move).
+    pub bytes_total: u64,
+}
+
+impl ProgressInfo {
+    /// Create new progress info.
+    pub fn new(total: usize) -> Self {
+        Self {
+            current_item: String::new(),
+            current: 0,
+            total,
+            bytes_done: 0,
+            bytes_total: 0,
+        }
+    }
+
+    /// Get progress as a fraction (0.0 to 1.0).
+    pub fn fraction(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.current as f64 / self.total as f64
+        }
+    }
+}
+
+/// A modal progress dialog for long operations.
+pub struct ProgressDialog {
+    /// Window bounds (for centering).
+    bounds: Rect,
+    /// Dialog title (operation name).
+    title: String,
+    /// Whether the dialog is visible.
+    visible: bool,
+    /// Progress information.
+    progress: ProgressInfo,
+    /// Whether the operation can be cancelled.
+    cancellable: bool,
+    /// Whether cancel was requested.
+    cancel_requested: bool,
+    /// Whether the cancel button is hovered.
+    cancel_hovered: bool,
+    /// Time when dialog was shown.
+    start_time: Option<Instant>,
+}
+
+impl ProgressDialog {
+    /// Create a new progress dialog.
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            bounds,
+            title: String::new(),
+            visible: false,
+            progress: ProgressInfo::new(0),
+            cancellable: true,
+            cancel_requested: false,
+            cancel_hovered: false,
+            start_time: None,
+        }
+    }
+
+    /// Set bounds.
+    pub fn set_bounds(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+
+    /// Show the progress dialog.
+    pub fn show(&mut self, title: &str, total: usize, cancellable: bool) {
+        self.title = title.to_string();
+        self.progress = ProgressInfo::new(total);
+        self.cancellable = cancellable;
+        self.cancel_requested = false;
+        self.cancel_hovered = false;
+        self.visible = true;
+        self.start_time = Some(Instant::now());
+    }
+
+    /// Update progress.
+    pub fn update(&mut self, current: usize, current_item: &str) {
+        self.progress.current = current;
+        self.progress.current_item = current_item.to_string();
+    }
+
+    /// Update byte progress.
+    pub fn update_bytes(&mut self, bytes_done: u64, bytes_total: u64) {
+        self.progress.bytes_done = bytes_done;
+        self.progress.bytes_total = bytes_total;
+    }
+
+    /// Check if visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Check if cancel was requested.
+    pub fn is_cancel_requested(&self) -> bool {
+        self.cancel_requested
+    }
+
+    /// Hide the dialog.
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.start_time = None;
+    }
+
+    /// Handle key press.
+    pub fn handle_key(&mut self, key: &Key) -> bool {
+        if !self.visible {
+            return false;
+        }
+
+        match key {
+            Key::Escape if self.cancellable => {
+                self.cancel_requested = true;
+                true
+            }
+            _ => true, // Consume all keys while dialog is visible
+        }
+    }
+
+    /// Handle mouse move.
+    pub fn on_mouse_move(&mut self, pos: Point) {
+        if !self.visible || !self.cancellable {
+            return;
+        }
+
+        let cancel_rect = self.cancel_button_rect();
+        self.cancel_hovered = cancel_rect.contains_point(pos);
+    }
+
+    /// Handle click.
+    pub fn on_click(&mut self, pos: Point) -> bool {
+        if !self.visible {
+            return false;
+        }
+
+        if self.cancellable {
+            let cancel_rect = self.cancel_button_rect();
+            if cancel_rect.contains_point(pos) {
+                self.cancel_requested = true;
+                return true;
+            }
+        }
+
+        // Consume click but don't do anything else
+        true
+    }
+
+    /// Get the dialog rectangle (centered in bounds).
+    fn dialog_rect(&self) -> Rect {
+        let dialog_width = 450.min(self.bounds.width.saturating_sub(40));
+        let dialog_height = 160.min(self.bounds.height.saturating_sub(40));
+        let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
+        let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
+        Rect::new(x, y, dialog_width, dialog_height)
+    }
+
+    /// Get progress bar rectangle.
+    fn progress_bar_rect(&self) -> Rect {
+        let dialog = self.dialog_rect();
+        let bar_width = dialog.width.saturating_sub(40);
+        let bar_height = 8;
+        let x = dialog.x + 20;
+        let y = dialog.y + 80;
+        Rect::new(x, y, bar_width, bar_height)
+    }
+
+    /// Get cancel button rectangle.
+    fn cancel_button_rect(&self) -> Rect {
+        let dialog = self.dialog_rect();
+        let button_width = 80;
+        let button_height = 28;
+        let x = dialog.x + (dialog.width as i32 - button_width as i32) / 2;
+        let y = dialog.y + dialog.height as i32 - button_height as i32 - 16;
+        Rect::new(x, y, button_width, button_height)
+    }
+
+    /// Render the dialog.
+    pub fn render(&self, renderer: &Renderer) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
+
+        let theme = renderer.theme();
+
+        // Dim background overlay
+        renderer.fill_rect(self.bounds, gartk_core::Color::from_u8(0, 0, 0, 180))?;
+
+        let dialog_rect = self.dialog_rect();
+
+        // Dialog background
+        renderer.fill_rounded_rect(dialog_rect, 8.0, theme.background)?;
+        renderer.stroke_rounded_rect(dialog_rect, 8.0, theme.border, 1.0)?;
+
+        // Title
+        let title_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size + 2.0)
+            .color(theme.foreground);
+
+        renderer.text(
+            &self.title,
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 20) as f64,
+            &title_style,
+        )?;
+
+        // Current item
+        let item_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.item_foreground);
+
+        let item_text = if self.progress.current_item.is_empty() {
+            "Preparing...".to_string()
+        } else {
+            // Truncate long paths
+            let max_len = 50;
+            if self.progress.current_item.len() > max_len {
+                format!("...{}", &self.progress.current_item[self.progress.current_item.len() - max_len..])
+            } else {
+                self.progress.current_item.clone()
+            }
+        };
+
+        renderer.text(
+            &item_text,
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 50) as f64,
+            &item_style,
+        )?;
+
+        // Progress bar background
+        let bar_rect = self.progress_bar_rect();
+        renderer.fill_rounded_rect(bar_rect, 4.0, theme.item_background)?;
+
+        // Progress bar fill
+        let progress_fraction = self.progress.fraction();
+        if progress_fraction > 0.0 {
+            let fill_width = ((bar_rect.width as f64 * progress_fraction) as u32).max(1);
+            let fill_rect = Rect::new(bar_rect.x, bar_rect.y, fill_width, bar_rect.height);
+            let progress_color = gartk_core::Color::from_hex("#4a9eff").unwrap_or(theme.selection_background);
+            renderer.fill_rounded_rect(fill_rect, 4.0, progress_color)?;
+        }
+
+        // Progress text (e.g., "3 of 10")
+        let progress_text = format!("{} of {}", self.progress.current, self.progress.total);
+        let progress_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.item_foreground);
+
+        let text_width = renderer.measure_text(&progress_text, &progress_style)?.width;
+        let text_x = bar_rect.x + (bar_rect.width as i32 - text_width as i32) / 2;
+        renderer.text(
+            &progress_text,
+            text_x as f64,
+            (bar_rect.y + bar_rect.height as i32 + 8) as f64,
+            &progress_style,
+        )?;
+
+        // Cancel button (if cancellable)
+        if self.cancellable {
+            let cancel_rect = self.cancel_button_rect();
+            let cancel_bg = if self.cancel_hovered {
+                theme.item_hover_background
+            } else {
+                theme.item_background
+            };
+            renderer.fill_rounded_rect(cancel_rect, 4.0, cancel_bg)?;
+
+            let button_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size)
+                .color(theme.foreground);
+
+            let cancel_text = "Cancel";
+            let cancel_width = renderer.measure_text(cancel_text, &button_style)?.width;
+            let cancel_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_width as i32) / 2;
+            let cancel_y = cancel_rect.y + (cancel_rect.height as i32 - theme.font_size as i32) / 2;
+            renderer.text(cancel_text, cancel_x as f64, cancel_y as f64, &button_style)?;
+        }
 
         Ok(())
     }

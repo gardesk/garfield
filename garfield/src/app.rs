@@ -1,12 +1,12 @@
 //! Application state and event loop.
 
 use garfield::core::{
-    Clipboard, ClipboardOperation,
+    Clipboard, ClipboardOperation, FileOperation, UndoStack,
     copy_files, move_files, delete_files, create_directory,
-    trash_files,
+    trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, DialogResult, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -76,8 +76,12 @@ pub struct App {
     clipboard: Clipboard,
     /// Confirmation dialog.
     confirm_dialog: ConfirmDialog,
+    /// Progress dialog for long operations.
+    progress_dialog: ProgressDialog,
     /// Paths pending delete confirmation.
     pending_delete_paths: Vec<PathBuf>,
+    /// Undo/redo stack for file operations.
+    undo_stack: UndoStack,
 }
 
 impl App {
@@ -170,6 +174,9 @@ impl App {
         // Create confirm dialog (full window bounds)
         let confirm_dialog = ConfirmDialog::new(Rect::new(0, 0, width, height));
 
+        // Create progress dialog (full window bounds)
+        let progress_dialog = ProgressDialog::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -216,7 +223,9 @@ impl App {
             drag_active: false,
             clipboard: Clipboard::new(),
             confirm_dialog,
+            progress_dialog,
             pending_delete_paths: Vec::new(),
+            undo_stack: UndoStack::new(),
         };
 
         app.update_status_bar();
@@ -301,6 +310,12 @@ impl App {
 
     /// Handle mouse press.
     fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers, button: Option<MouseButton>) {
+        // Check progress dialog first (blocks all other input)
+        if self.progress_dialog.is_visible() {
+            self.progress_dialog.on_click(pos);
+            return;
+        }
+
         // Check confirm dialog first
         if self.confirm_dialog.is_visible() {
             if let Some(result) = self.confirm_dialog.on_click(pos) {
@@ -530,6 +545,12 @@ impl App {
 
     /// Handle mouse move.
     fn handle_mouse_move(&mut self, pos: Point) {
+        // Handle progress dialog hover
+        if self.progress_dialog.is_visible() {
+            self.progress_dialog.on_mouse_move(pos);
+            return;
+        }
+
         // Handle confirm dialog hover
         if self.confirm_dialog.is_visible() {
             self.confirm_dialog.on_mouse_move(pos);
@@ -606,6 +627,12 @@ impl App {
 
     /// Handle a key press.
     fn handle_key(&mut self, key: &Key, modifiers: &gartk_core::Modifiers) {
+        // Handle progress dialog when visible (blocks all other input)
+        if self.progress_dialog.is_visible() {
+            self.progress_dialog.handle_key(key);
+            return;
+        }
+
         // Handle confirm dialog when visible
         if self.confirm_dialog.is_visible() {
             if let Some(result) = self.confirm_dialog.handle_key(key) {
@@ -815,6 +842,14 @@ impl App {
                 }
                 Key::Char('v') | Key::Char('V') => {
                     self.paste();
+                    return;
+                }
+                Key::Char('z') | Key::Char('Z') => {
+                    self.undo();
+                    return;
+                }
+                Key::Char('y') | Key::Char('Y') => {
+                    self.redo();
                     return;
                 }
                 _ => {}
@@ -1246,17 +1281,31 @@ impl App {
 
         if let Some((files, op)) = self.clipboard.take() {
             let count = files.len();
+            let sources = files.clone();
             let result = match op {
                 ClipboardOperation::Copy => copy_files(&files, &dest_dir),
                 ClipboardOperation::Cut => move_files(&files, &dest_dir),
             };
 
-            // Show result in status bar
-            if result.success {
+            // Show result in status bar and record for undo
+            if result.success && !result.processed.is_empty() {
                 let action = if op == ClipboardOperation::Copy { "copied" } else { "moved" };
                 let msg = if count == 1 { format!("1 item {}", action) } else { format!("{} items {}", count, action) };
                 self.status_bar.set_status_message(msg);
-            } else {
+
+                // Record for undo
+                let undo_op = match op {
+                    ClipboardOperation::Copy => FileOperation::Copy {
+                        sources,
+                        destinations: result.processed.clone(),
+                    },
+                    ClipboardOperation::Cut => FileOperation::Move {
+                        sources,
+                        destinations: result.processed.clone(),
+                    },
+                };
+                self.undo_stack.push(undo_op);
+            } else if !result.success {
                 let msg = format!("Operation failed: {}", result.error.as_deref().unwrap_or("unknown error"));
                 self.status_bar.set_status_message(msg);
             }
@@ -1277,12 +1326,33 @@ impl App {
         let success_count = results.iter().filter(|r| r.is_ok()).count();
         let failed_count = results.iter().filter(|r| r.is_err()).count();
 
+        // Collect successful trash operations for undo
+        let mut trashed_originals = Vec::new();
+        let mut trash_names = Vec::new();
+        for (i, result) in results.iter().enumerate() {
+            if let Ok(trash_path) = result {
+                trashed_originals.push(paths[i].clone());
+                // Extract the trash entry name (filename in trash/files/)
+                if let Some(name) = trash_path.file_name() {
+                    trash_names.push(name.to_string_lossy().to_string());
+                }
+            }
+        }
+
         if failed_count > 0 {
             let msg = format!("Moved {} to trash, {} failed", success_count, failed_count);
             self.status_bar.set_status_message(msg);
         } else {
             let msg = if count == 1 { "1 item moved to trash".to_string() } else { format!("{} items moved to trash", count) };
             self.status_bar.set_status_message(msg);
+        }
+
+        // Record for undo if any succeeded
+        if !trashed_originals.is_empty() {
+            self.undo_stack.push(FileOperation::Trash {
+                originals: trashed_originals,
+                trash_names,
+            });
         }
 
         self.refresh();
@@ -1349,13 +1419,163 @@ impl App {
         }
 
         match create_directory(&current_dir, &name) {
-            Ok(_) => {
+            Ok(path) => {
                 self.status_bar.set_status_message(format!("Created '{}'", name));
+                self.undo_stack.push(FileOperation::CreateDir { path });
                 self.refresh();
                 // TODO: Start rename on the new folder
             }
             Err(e) => {
                 self.status_bar.set_status_message(format!("Failed to create folder: {}", e));
+            }
+        }
+    }
+
+    /// Undo the last file operation.
+    fn undo(&mut self) {
+        let op = match self.undo_stack.pop_undo() {
+            Some(op) => op,
+            None => {
+                self.status_bar.set_status_message("Nothing to undo");
+                return;
+            }
+        };
+
+        let result = self.perform_undo(&op);
+        match result {
+            Ok(msg) => {
+                self.status_bar.set_status_message(format!("Undo: {}", msg));
+                self.undo_stack.push_redo(op);
+            }
+            Err(msg) => {
+                self.status_bar.set_status_message(format!("Undo failed: {}", msg));
+            }
+        }
+        self.refresh();
+    }
+
+    /// Perform the undo operation.
+    fn perform_undo(&mut self, op: &FileOperation) -> Result<String, String> {
+        use garfield::core::{delete_path, move_path, rename_path};
+
+        match op {
+            FileOperation::Copy { destinations, .. } => {
+                // Undo copy: delete the copied files
+                for dest in destinations {
+                    if dest.exists() {
+                        delete_path(dest).map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok(format!("Deleted {} copied item(s)", destinations.len()))
+            }
+            FileOperation::Move { sources, destinations } => {
+                // Undo move: move files back to original locations
+                for (src, dest) in sources.iter().zip(destinations.iter()) {
+                    if dest.exists() {
+                        if let Some(parent) = src.parent() {
+                            move_path(dest, parent).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                Ok(format!("Moved {} item(s) back", sources.len()))
+            }
+            FileOperation::Trash { trash_names, .. } => {
+                // Undo trash: restore from trash
+                for name in trash_names {
+                    restore_from_trash(name).map_err(|e| e.to_string())?;
+                }
+                Ok(format!("Restored {} item(s) from trash", trash_names.len()))
+            }
+            FileOperation::Rename { original, renamed } => {
+                // Undo rename: rename back to original
+                if renamed.exists() {
+                    if let Some(orig_name) = original.file_name() {
+                        rename_path(renamed, orig_name.to_string_lossy().as_ref())
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok("Renamed back".to_string())
+            }
+            FileOperation::CreateDir { path } => {
+                // Undo create dir: delete the directory (only if empty)
+                if path.exists() && path.is_dir() {
+                    std::fs::remove_dir(path).map_err(|e| e.to_string())?;
+                }
+                Ok("Deleted folder".to_string())
+            }
+        }
+    }
+
+    /// Redo the last undone operation.
+    fn redo(&mut self) {
+        let op = match self.undo_stack.pop_redo() {
+            Some(op) => op,
+            None => {
+                self.status_bar.set_status_message("Nothing to redo");
+                return;
+            }
+        };
+
+        let result = self.perform_redo(&op);
+        match result {
+            Ok(msg) => {
+                self.status_bar.set_status_message(format!("Redo: {}", msg));
+                self.undo_stack.push(op);
+            }
+            Err(msg) => {
+                self.status_bar.set_status_message(format!("Redo failed: {}", msg));
+            }
+        }
+        self.refresh();
+    }
+
+    /// Perform the redo operation.
+    fn perform_redo(&mut self, op: &FileOperation) -> Result<String, String> {
+        use garfield::core::{copy_path, move_path, rename_path};
+
+        match op {
+            FileOperation::Copy { sources, destinations } => {
+                // Redo copy: copy files again
+                for (src, dest) in sources.iter().zip(destinations.iter()) {
+                    if src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            copy_path(src, parent).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                Ok(format!("Copied {} item(s)", sources.len()))
+            }
+            FileOperation::Move { sources, destinations } => {
+                // Redo move: move files again
+                for (src, dest) in sources.iter().zip(destinations.iter()) {
+                    if src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            move_path(src, parent).map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                Ok(format!("Moved {} item(s)", sources.len()))
+            }
+            FileOperation::Trash { originals, .. } => {
+                // Redo trash: trash the files again
+                let results = trash_files(originals);
+                let success = results.iter().filter(|r| r.is_ok()).count();
+                Ok(format!("Trashed {} item(s)", success))
+            }
+            FileOperation::Rename { original, renamed } => {
+                // Redo rename: rename again
+                if original.exists() {
+                    if let Some(new_name) = renamed.file_name() {
+                        rename_path(original, new_name.to_string_lossy().as_ref())
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok("Renamed".to_string())
+            }
+            FileOperation::CreateDir { path } => {
+                // Redo create dir: create the directory again
+                std::fs::create_dir(path).map_err(|e| e.to_string())?;
+                Ok("Created folder".to_string())
             }
         }
     }
@@ -1392,7 +1612,14 @@ impl App {
             .map(|t| t.confirm_rename());
 
         match result {
-            Some(Ok(new_name)) => {
+            Some(Ok((original, renamed, new_name))) => {
+                // Only record undo if the name actually changed
+                if original != renamed {
+                    self.undo_stack.push(FileOperation::Rename {
+                        original,
+                        renamed,
+                    });
+                }
                 self.status_bar.set_status_message(format!("Renamed to '{}'", new_name));
             }
             Some(Err(msg)) => {
@@ -1557,6 +1784,7 @@ impl App {
 
         self.help_modal.set_bounds(Rect::new(0, 0, width, height));
         self.confirm_dialog.set_bounds(Rect::new(0, 0, width, height));
+        self.progress_dialog.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -1622,6 +1850,9 @@ impl App {
 
         // Draw confirm dialog overlay (on top of everything)
         self.confirm_dialog.render(&self.renderer)?;
+
+        // Draw progress dialog overlay (on top of everything)
+        self.progress_dialog.render(&self.renderer)?;
 
         // Flush and copy to window
         self.renderer.flush();
