@@ -296,6 +296,11 @@ impl Sidebar {
         self.bounds = bounds;
     }
 
+    /// Get current bounds.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
     /// Get sidebar width.
     pub fn width(&self) -> u32 {
         if self.visible {
@@ -303,6 +308,26 @@ impl Sidebar {
         } else {
             0
         }
+    }
+
+    /// Set sidebar width (clamped to min/max).
+    pub fn set_width(&mut self, width: u32) {
+        let min_width = 120;
+        let max_width = 400;
+        self.bounds.width = width.clamp(min_width, max_width);
+    }
+
+    /// Check if position is on the resize handle (right edge).
+    pub fn is_resize_handle(&self, pos: Point) -> bool {
+        if !self.visible {
+            return false;
+        }
+        let handle_x = self.bounds.x + self.bounds.width as i32;
+        let tolerance = 4;
+        pos.x >= handle_x - tolerance
+            && pos.x <= handle_x + tolerance
+            && pos.y >= self.bounds.y
+            && pos.y <= self.bounds.y + self.bounds.height as i32
     }
 
     /// Toggle visibility.

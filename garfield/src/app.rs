@@ -51,6 +51,8 @@ pub struct App {
     should_quit: bool,
     /// Pane divider resize in progress (split pane pointer path).
     pane_resize_path: Option<Vec<bool>>,
+    /// Sidebar resize in progress.
+    sidebar_resizing: bool,
     /// Last click time for double-click detection.
     last_click_time: Option<Instant>,
     /// Last click position for double-click detection.
@@ -190,6 +192,7 @@ impl App {
             help_modal,
             should_quit: false,
             pane_resize_path: None,
+            sidebar_resizing: false,
             last_click_time: None,
             last_click_pos: None,
             drag_source_path: None,
@@ -326,6 +329,12 @@ impl App {
             return;
         }
 
+        // Check for sidebar resize handle
+        if self.sidebar.is_resize_handle(pos) {
+            self.sidebar_resizing = true;
+            return;
+        }
+
         // Check for pane split divider resize start
         if let Some(path) = self.root_pane.split_divider_at(pos) {
             self.pane_resize_path = Some(path);
@@ -416,8 +425,9 @@ impl App {
         self.drag_active = false;
         self.sidebar.set_drop_highlight(false);
 
-        // Clear pane resize
+        // Clear resize states
         self.pane_resize_path = None;
+        self.sidebar_resizing = false;
 
         if let Some(pane) = self.focused_pane_mut() {
             if pane.is_resizing() {
@@ -431,6 +441,15 @@ impl App {
 
     /// Handle mouse move.
     fn handle_mouse_move(&mut self, pos: Point) {
+        // Handle sidebar resize in progress
+        if self.sidebar_resizing {
+            let new_width = (pos.x - self.sidebar.bounds().x).max(0) as u32;
+            self.sidebar.set_width(new_width);
+            let size = self.renderer.size();
+            self.update_layout(size.width, size.height);
+            return;
+        }
+
         // Handle pane divider resize in progress
         if let Some(path) = &self.pane_resize_path {
             let path_clone = path.clone();
@@ -1072,10 +1091,16 @@ impl App {
 
     /// Update layout.
     fn update_layout(&mut self, width: u32, height: u32) {
-        let sidebar_w = self.sidebar.width();
+        // Preserve current sidebar width (or use default if sidebar is hidden)
+        let current_sidebar_width = if self.sidebar.is_visible() {
+            self.sidebar.bounds().width
+        } else {
+            SIDEBAR_WIDTH
+        };
+        let sidebar_w = if self.sidebar.is_visible() { current_sidebar_width } else { 0 };
         let header_height = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT + BREADCRUMB_HEIGHT;
 
-        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
+        self.sidebar.set_bounds(Rect::new(0, 0, current_sidebar_width, height));
 
         self.tab_bar.set_bounds(Rect::new(
             sidebar_w as i32,
