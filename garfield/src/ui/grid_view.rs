@@ -460,13 +460,11 @@ impl GridView {
                 entry.name.clone()
             };
 
-            let name_rect = Rect::new(
-                cell.x + 4,
-                cell.y + ICON_SIZE as i32 + 8,
-                cell.width - 8,
-                cell.height - ICON_SIZE - 12,
-            );
-            renderer.text_in_rect(&display_name, name_rect, &name_style)?;
+            // Measure text and center it horizontally
+            let text_size = renderer.measure_text(&display_name, &name_style)?;
+            let name_x = cell.x + (cell.width as i32 - text_size.width as i32) / 2;
+            let name_y = cell.y + ICON_SIZE as i32 + 12;
+            renderer.text(&display_name, name_x as f64, name_y as f64, &name_style)?;
         }
 
         // Draw rubber band selection rectangle
