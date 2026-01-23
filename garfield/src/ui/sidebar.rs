@@ -410,26 +410,31 @@ impl Sidebar {
             y = self.render_item(renderer, i, y, is_hovered, &icon_style, &name_style, &hover_style)?;
         }
 
-        // Render bookmarks section if any
-        if !self.bookmarks.is_empty() {
-            // Separator
-            y += 8;
-            renderer.line(
-                (self.bounds.x + self.padding as i32) as f64,
-                y as f64,
-                (self.bounds.x + self.bounds.width as i32 - self.padding as i32) as f64,
-                y as f64,
-                theme.border,
-                1.0,
-            )?;
-            y += 8;
+        // Always show separator and bookmarks section
+        y += 8;
+        renderer.line(
+            (self.bounds.x + self.padding as i32) as f64,
+            y as f64,
+            (self.bounds.x + self.bounds.width as i32 - self.padding as i32) as f64,
+            y as f64,
+            theme.border,
+            1.0,
+        )?;
+        y += 8;
 
-            // Header
-            let header_x = self.bounds.x + self.padding as i32;
-            renderer.text("Bookmarks", header_x as f64, y as f64, &header_style)?;
-            y += (theme.font_size + 4.0) as i32;
+        // Header
+        let header_x = self.bounds.x + self.padding as i32;
+        renderer.text("Bookmarks", header_x as f64, y as f64, &header_style)?;
+        y += (theme.font_size + 4.0) as i32;
 
-            // Bookmark items
+        // Bookmark items (or hint if empty)
+        if self.bookmarks.is_empty() {
+            let hint_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size - 2.0)
+                .color(theme.item_foreground.with_alpha(0.4));
+            renderer.text("Ctrl+D to add", (header_x + 4) as f64, y as f64, &hint_style)?;
+        } else {
             for i in 0..self.bookmarks.len() {
                 let combined_index = self.places.len() + i;
                 let is_hovered = self.hovered == Some(combined_index);
