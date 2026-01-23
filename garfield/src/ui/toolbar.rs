@@ -240,13 +240,19 @@ impl Toolbar {
         let tooltip_height = text_size.height + padding * 2;
 
         // Position tooltip below the button, centered
-        let tooltip_x = button.bounds.x + (button.bounds.width as i32 - tooltip_width as i32) / 2;
+        let mut tooltip_x = button.bounds.x + (button.bounds.width as i32 - tooltip_width as i32) / 2;
         let tooltip_y = button.bounds.y + button.bounds.height as i32 + 4;
+
+        // Clamp tooltip to stay within toolbar bounds (prevent right edge cutoff)
+        let max_x = self.bounds.x + self.bounds.width as i32 - tooltip_width as i32 - 4;
+        let min_x = self.bounds.x + 4;
+        tooltip_x = tooltip_x.clamp(min_x, max_x);
 
         let tooltip_rect = Rect::new(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
 
-        // Draw tooltip background with border
-        renderer.fill_rounded_rect(tooltip_rect, 4.0, theme.input_background)?;
+        // Draw tooltip background with solid color (full opacity)
+        let bg_color = gartk_core::Color::from_u8(40, 40, 45, 255);
+        renderer.fill_rounded_rect(tooltip_rect, 4.0, bg_color)?;
         renderer.stroke_rounded_rect(tooltip_rect, 4.0, theme.border, 1.0)?;
 
         // Draw tooltip text
@@ -418,12 +424,32 @@ impl Toolbar {
     }
 
     fn draw_help_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
-        // Draw "?" character using text
-        let style = TextStyle::new()
-            .font_family("monospace")
-            .font_size(16.0)
-            .color(color);
-        renderer.text("?", cx - 4.0, cy - 8.0, &style)?;
+        // Draw circle outline
+        let r = 9.0;
+        let segments = 20;
+        for i in 0..segments {
+            let a1 = (i as f64 / segments as f64) * std::f64::consts::TAU;
+            let a2 = ((i + 1) as f64 / segments as f64) * std::f64::consts::TAU;
+            renderer.line(
+                cx + r * a1.cos(),
+                cy + r * a1.sin(),
+                cx + r * a2.cos(),
+                cy + r * a2.sin(),
+                color,
+                1.5,
+            )?;
+        }
+
+        // Draw "?" shape inside
+        // Top arc of question mark
+        renderer.line(cx - 2.5, cy - 3.0, cx - 1.0, cy - 5.0, color, 1.5)?;
+        renderer.line(cx - 1.0, cy - 5.0, cx + 2.0, cy - 5.0, color, 1.5)?;
+        renderer.line(cx + 2.0, cy - 5.0, cx + 3.0, cy - 3.0, color, 1.5)?;
+        // Curve down to stem
+        renderer.line(cx + 3.0, cy - 3.0, cx + 1.0, cy - 1.0, color, 1.5)?;
+        renderer.line(cx + 1.0, cy - 1.0, cx, cy + 1.0, color, 1.5)?;
+        // Dot at bottom
+        renderer.fill_rect(Rect::new((cx - 1.0) as i32, (cy + 3.0) as i32, 3, 3), color)?;
         Ok(())
     }
 }
