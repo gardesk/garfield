@@ -216,25 +216,32 @@ impl Sidebar {
 
     /// Add a bookmark for the given path. Returns true if added.
     pub fn add_bookmark(&mut self, path: &Path) -> bool {
+        // Canonicalize the path for consistent comparison
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
         // Check if already bookmarked
-        if self.bookmarks.iter().any(|b| b.path == path) {
+        if self.bookmarks.iter().any(|b| {
+            b.path.canonicalize().unwrap_or_else(|_| b.path.clone()) == canonical
+        }) {
             return false;
         }
 
         // Check if it's a default place
-        if self.places.iter().any(|p| p.path == path) {
+        if self.places.iter().any(|p| {
+            p.path.canonicalize().unwrap_or_else(|_| p.path.clone()) == canonical
+        }) {
             return false;
         }
 
-        let name = path
+        let name = canonical
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string());
+            .unwrap_or_else(|| canonical.to_string_lossy().to_string());
 
         self.bookmarks.push(Place {
             name,
             icon: "*".to_string(),
-            path: path.to_path_buf(),
+            path: canonical,
             bounds: Rect::new(0, 0, 0, 0),
             is_bookmark: true,
         });
@@ -245,8 +252,11 @@ impl Sidebar {
 
     /// Remove a bookmark by path. Returns true if removed.
     pub fn remove_bookmark(&mut self, path: &Path) -> bool {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let initial_len = self.bookmarks.len();
-        self.bookmarks.retain(|b| b.path != path);
+        self.bookmarks.retain(|b| {
+            b.path.canonicalize().unwrap_or_else(|_| b.path.clone()) != canonical
+        });
 
         if self.bookmarks.len() != initial_len {
             self.save_bookmarks();
@@ -258,7 +268,10 @@ impl Sidebar {
 
     /// Check if a path is bookmarked.
     pub fn is_bookmarked(&self, path: &Path) -> bool {
-        self.bookmarks.iter().any(|b| b.path == path)
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.bookmarks.iter().any(|b| {
+            b.path.canonicalize().unwrap_or_else(|_| b.path.clone()) == canonical
+        })
     }
 
     /// Toggle bookmark for a path.
