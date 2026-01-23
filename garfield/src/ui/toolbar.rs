@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use gartk_core::{Point, Rect, Theme};
-use gartk_render::Renderer;
+use gartk_render::{Renderer, TextStyle};
 
 /// Height of the toolbar.
 pub const TOOLBAR_HEIGHT: u32 = 36;
@@ -37,6 +37,8 @@ pub enum ToolbarAction {
     GoForward,
     /// Go up to parent directory.
     GoUp,
+    /// Show help modal.
+    Help,
 }
 
 /// A toolbar button.
@@ -147,6 +149,14 @@ impl Toolbar {
             });
             x += BUTTON_SIZE as i32 + BUTTON_PADDING as i32;
         }
+
+        // Help button (right-aligned)
+        let help_x = self.bounds.x + self.bounds.width as i32 - BUTTON_SIZE as i32 - BUTTON_PADDING as i32;
+        self.buttons.push(ToolbarButton {
+            action: ToolbarAction::Help,
+            bounds: Rect::new(help_x, y, BUTTON_SIZE, BUTTON_SIZE),
+            tooltip: "Help (F1)",
+        });
     }
 
     /// Handle mouse move.
@@ -206,6 +216,47 @@ impl Toolbar {
             self.render_button(renderer, button, i, theme)?;
         }
 
+        // Draw tooltip if hovering
+        if let Some(hovered_idx) = self.hovered {
+            if let Some(button) = self.buttons.get(hovered_idx) {
+                self.render_tooltip(renderer, button, theme)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Render tooltip for a button.
+    fn render_tooltip(&self, renderer: &Renderer, button: &ToolbarButton, theme: &Theme) -> Result<()> {
+        let text_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.foreground);
+
+        let text_size = renderer.measure_text(button.tooltip, &text_style)?;
+
+        let padding = 6;
+        let tooltip_width = text_size.width + padding * 2;
+        let tooltip_height = text_size.height + padding * 2;
+
+        // Position tooltip below the button, centered
+        let tooltip_x = button.bounds.x + (button.bounds.width as i32 - tooltip_width as i32) / 2;
+        let tooltip_y = button.bounds.y + button.bounds.height as i32 + 4;
+
+        let tooltip_rect = Rect::new(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
+
+        // Draw tooltip background with border
+        renderer.fill_rounded_rect(tooltip_rect, 4.0, theme.input_background)?;
+        renderer.stroke_rounded_rect(tooltip_rect, 4.0, theme.border, 1.0)?;
+
+        // Draw tooltip text
+        renderer.text(
+            button.tooltip,
+            (tooltip_x + padding as i32) as f64,
+            (tooltip_y + padding as i32) as f64,
+            &text_style,
+        )?;
+
         Ok(())
     }
 
@@ -258,6 +309,7 @@ impl Toolbar {
             ToolbarAction::NewTab => self.draw_new_tab_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::SplitHorizontal => self.draw_split_h_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::SplitVertical => self.draw_split_v_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::Help => self.draw_help_icon(renderer, cx, cy, icon_color)?,
         }
 
         Ok(())
@@ -362,6 +414,22 @@ impl Toolbar {
         renderer.line(cx - w/2.0, cy + h/2.0, cx - w/2.0, cy - h/2.0, color, 1.5)?;
         // Horizontal divider
         renderer.line(cx - w/2.0, cy, cx + w/2.0, cy, color, 1.5)?;
+        Ok(())
+    }
+
+    fn draw_help_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Question mark shape
+        // Arc at top (simplified as lines)
+        let r = 4.0;
+        renderer.line(cx - r, cy - r + 1.0, cx - r + 2.0, cy - r - 2.0, color, 2.0)?;
+        renderer.line(cx - r + 2.0, cy - r - 2.0, cx + r - 2.0, cy - r - 2.0, color, 2.0)?;
+        renderer.line(cx + r - 2.0, cy - r - 2.0, cx + r, cy - r + 1.0, color, 2.0)?;
+        renderer.line(cx + r, cy - r + 1.0, cx + 1.0, cy, color, 2.0)?;
+        // Stem
+        renderer.line(cx, cy, cx, cy + 2.0, color, 2.0)?;
+        // Dot
+        let dot_rect = Rect::new((cx - 1.0) as i32, (cy + 4.0) as i32, 2, 2);
+        renderer.fill_rect(dot_rect, color)?;
         Ok(())
     }
 }
