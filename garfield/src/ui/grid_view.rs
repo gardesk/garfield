@@ -2,7 +2,7 @@
 
 use crate::core::{EntryType, FileEntry, SortDirection, SortOrder};
 use gartk_core::{Color, Modifiers, Point, Rect};
-use gartk_render::{Renderer, TextStyle};
+use gartk_render::{Renderer, TextAlign, TextStyle};
 use std::collections::HashSet;
 
 /// Size of each grid cell.
@@ -452,18 +452,20 @@ impl GridView {
                 .font_size(theme.font_size - 1.0)
                 .color(name_color);
 
-            // Truncate name if too long
-            let max_chars = (cell.width / 7) as usize;
-            let display_name = if entry.name.len() > max_chars {
-                format!("{}...", &entry.name[..max_chars.saturating_sub(3)])
-            } else {
-                entry.name.clone()
-            };
+            // Use Pango CENTER alignment for proper text centering (like Dolphin/Nautilus)
+            let name_style = name_style.clone()
+                .align(TextAlign::Center)
+                .ellipsize(true)
+                .max_width((cell.width - 8) as i32);
 
-            // Center text horizontally below icon
-            let center_x = cell.x + cell.width as i32 / 2;
-            let center_y = cell.y + ICON_SIZE as i32 + 16;
-            renderer.text_centered(&display_name, Point::new(center_x, center_y), &name_style)?;
+            // Rectangle for the text area below the icon
+            let text_rect = Rect::new(
+                cell.x + 4,
+                cell.y + ICON_SIZE as i32 + 8,
+                cell.width - 8,
+                cell.height - ICON_SIZE - 12,
+            );
+            renderer.text_in_rect(&entry.name, text_rect, &name_style)?;
         }
 
         // Draw rubber band selection rectangle
