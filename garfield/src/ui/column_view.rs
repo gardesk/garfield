@@ -23,6 +23,17 @@ pub enum ColumnClickResult {
     None,
 }
 
+/// Role of a column for rendering purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnRole {
+    /// Parent column - dimmed position indicator.
+    Parent,
+    /// Current column - active selection highlight.
+    Current,
+    /// Preview column - no selection highlight.
+    Preview,
+}
+
 /// A single column in the Miller columns view.
 struct Column {
     /// Entries in this column.
@@ -368,6 +379,60 @@ impl ColumnView {
         }
     }
 
+    /// Get the entry at the given position (for drag detection).
+    pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
+        // Check current column (main selection column)
+        if self.current_column.bounds.contains_point(pos) {
+            let visible = self.visible_entries();
+            let visible_rows = self.current_column.visible_rows();
+
+            for i in self.current_column.scroll_offset..(self.current_column.scroll_offset + visible_rows).min(visible.len()) {
+                let y = self.current_column.bounds.y + ((i - self.current_column.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                let row = Rect::new(self.current_column.bounds.x, y, self.current_column.bounds.width, ROW_HEIGHT);
+
+                if row.contains_point(pos) {
+                    return visible.get(i).copied();
+                }
+            }
+        }
+
+        // Check parent column
+        if let Some(ref parent) = self.parent_column {
+            if parent.bounds.contains_point(pos) {
+                let visible = parent.visible_entries(self.show_hidden);
+                let visible_rows = parent.visible_rows();
+
+                for i in parent.scroll_offset..(parent.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = parent.bounds.y + ((i - parent.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(parent.bounds.x, y, parent.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        return visible.get(i).copied();
+                    }
+                }
+            }
+        }
+
+        // Check preview column
+        if let Some(ref preview) = self.preview_column {
+            if preview.bounds.contains_point(pos) {
+                let visible = preview.visible_entries(self.show_hidden);
+                let visible_rows = preview.visible_rows();
+
+                for i in preview.scroll_offset..(preview.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = preview.bounds.y + ((i - preview.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(preview.bounds.x, y, preview.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        return visible.get(i).copied();
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Handle click in any column. Returns click result.
     pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> ColumnClickResult {
         // Check parent column click - navigate to clicked directory
@@ -477,9 +542,9 @@ impl ColumnView {
     pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
         let theme = renderer.theme();
 
-        // Draw parent column
+        // Draw parent column (with dimmed position indicator)
         if let Some(ref parent) = self.parent_column {
-            self.render_column(renderer, parent, false)?;
+            self.render_column(renderer, parent, ColumnRole::Parent)?;
             // Draw divider
             let divider_x = parent.bounds.x + parent.bounds.width as i32;
             renderer.line(
@@ -492,10 +557,10 @@ impl ColumnView {
             )?;
         }
 
-        // Draw current column
-        self.render_column(renderer, &self.current_column, true)?;
+        // Draw current column (with active selection highlight)
+        self.render_column(renderer, &self.current_column, ColumnRole::Current)?;
 
-        // Draw preview column
+        // Draw preview column (no selection highlight)
         if let Some(ref preview) = self.preview_column {
             let divider_x = self.current_column.bounds.x + self.current_column.bounds.width as i32;
             renderer.line(
@@ -506,7 +571,7 @@ impl ColumnView {
                 theme.border,
                 1.0,
             )?;
-            self.render_column(renderer, preview, false)?;
+            self.render_column(renderer, preview, ColumnRole::Preview)?;
         } else if let Some(entry) = self.selected_entry() {
             // Show file info for non-directories
             if !entry.is_dir() {
@@ -518,7 +583,7 @@ impl ColumnView {
     }
 
     /// Render a single column.
-    fn render_column(&self, renderer: &Renderer, column: &Column, is_current: bool) -> anyhow::Result<()> {
+    fn render_column(&self, renderer: &Renderer, column: &Column, role: ColumnRole) -> anyhow::Result<()> {
         let theme = renderer.theme();
         let visible = column.visible_entries(self.show_hidden);
         let visible_rows = column.visible_rows();
@@ -532,22 +597,29 @@ impl ColumnView {
             let y = column.bounds.y + (i as i32 * ROW_HEIGHT as i32);
             let row = Rect::new(column.bounds.x, y, column.bounds.width, ROW_HEIGHT);
 
-            let is_selected = if is_current {
-                self.selected.contains(&actual_index)
-            } else {
-                actual_index == column.selected
+            // Determine selection state based on column role
+            let (is_selected, show_highlight) = match role {
+                ColumnRole::Current => (self.selected.contains(&actual_index), true),
+                ColumnRole::Parent => (actual_index == column.selected, true),
+                ColumnRole::Preview => (false, false), // No highlight in preview
             };
             let is_hovered = column.hovered == Some(actual_index);
 
             // Row background
-            if is_selected {
-                renderer.fill_rect(row, theme.item_selected_background)?;
+            if is_selected && show_highlight {
+                if role == ColumnRole::Parent {
+                    // Dimmer highlight for parent column position indicator
+                    renderer.fill_rect(row, theme.item_selected_background.with_alpha(0.4))?;
+                } else {
+                    // Full highlight for current column
+                    renderer.fill_rect(row, theme.item_selected_background)?;
+                }
             } else if is_hovered {
                 renderer.fill_rect(row, theme.item_background)?;
             }
 
-            // Entry color
-            let text_color = if is_selected {
+            // Entry color - don't use selection foreground for parent column
+            let text_color = if is_selected && show_highlight && role == ColumnRole::Current {
                 theme.selection_foreground
             } else if entry.hidden {
                 theme.item_foreground.with_alpha(0.5)

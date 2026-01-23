@@ -206,6 +206,15 @@ impl Tab {
         }
     }
 
+    /// Get the entry at the given position (for drag detection).
+    pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
+        match self.view_mode {
+            ViewMode::List => self.list_view.entry_at_point(pos),
+            ViewMode::Grid => self.grid_view.entry_at_point(pos),
+            ViewMode::Columns => self.column_view.entry_at_point(pos),
+        }
+    }
+
     /// Enter the selected entry (open directory).
     pub fn enter_selected(&mut self) {
         if let Some(entry) = self.selected_entry().cloned() {

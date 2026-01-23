@@ -4,7 +4,7 @@ use garfield::ui::pane::SplitDirection;
 use garfield::ui::{AddressBar, Breadcrumb, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, Point, Rect, Theme};
-use gartk_render::{Renderer, Surface};
+use gartk_render::{Renderer, Surface, TextStyle};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -55,6 +55,16 @@ pub struct App {
     last_click_time: Option<Instant>,
     /// Last click position for double-click detection.
     last_click_pos: Option<Point>,
+    /// Path being dragged for bookmark drop (directory only).
+    drag_source_path: Option<PathBuf>,
+    /// Name of the item being dragged (for visual feedback).
+    drag_label: Option<String>,
+    /// Starting position of potential drag.
+    drag_start_pos: Option<Point>,
+    /// Current mouse position during drag (for visual feedback).
+    drag_current_pos: Option<Point>,
+    /// Whether drag is actively in progress (moved past threshold).
+    drag_active: bool,
 }
 
 impl App {
@@ -182,6 +192,11 @@ impl App {
             pane_resize_path: None,
             last_click_time: None,
             last_click_pos: None,
+            drag_source_path: None,
+            drag_label: None,
+            drag_start_pos: None,
+            drag_current_pos: None,
+            drag_active: false,
         };
 
         app.update_status_bar();
@@ -217,8 +232,9 @@ impl App {
                     self.handle_mouse_press(pos, &mouse_event.modifiers);
                     ev.request_redraw();
                 }
-                InputEvent::MouseRelease(_) => {
-                    self.handle_mouse_release();
+                InputEvent::MouseRelease(mouse_event) => {
+                    let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
+                    self.handle_mouse_release(pos);
                     ev.request_redraw();
                 }
                 InputEvent::MouseMove(mouse_event) => {
@@ -363,11 +379,43 @@ impl App {
                     tab.on_click(pos, modifiers);
                 }
             }
+
+            // Capture drag source from entry at click position (for bookmark drag)
+            let entry_at_click = self.focused_pane()
+                .and_then(|pane| pane.active_tab())
+                .and_then(|tab| tab.entry_at_point(pos))
+                .filter(|e| e.is_dir())
+                .map(|e| (e.path.clone(), e.name.clone()));
+
+            if let Some((path, name)) = entry_at_click {
+                self.drag_source_path = Some(path);
+                self.drag_label = Some(name);
+                self.drag_start_pos = Some(pos);
+                self.drag_current_pos = Some(pos);
+                self.drag_active = false;
+            }
         }
     }
 
     /// Handle mouse release.
-    fn handle_mouse_release(&mut self) {
+    fn handle_mouse_release(&mut self, pos: Point) {
+        // Handle bookmark drag drop
+        if self.drag_active {
+            if let Some(path) = self.drag_source_path.take() {
+                if self.sidebar.is_bookmark_drop_zone(pos) {
+                    self.sidebar.add_bookmark(&path);
+                }
+            }
+        }
+
+        // Clear drag state
+        self.drag_source_path = None;
+        self.drag_label = None;
+        self.drag_start_pos = None;
+        self.drag_current_pos = None;
+        self.drag_active = false;
+        self.sidebar.set_drop_highlight(false);
+
         // Clear pane resize
         self.pane_resize_path = None;
 
@@ -397,6 +445,26 @@ impl App {
                     tab.on_mouse_move(pos);
                 }
                 return;
+            }
+        }
+
+        // Handle bookmark drag in progress
+        if self.drag_source_path.is_some() {
+            // Update current drag position for visual feedback
+            self.drag_current_pos = Some(pos);
+
+            // Check if we've moved past the drag threshold (5px)
+            if let Some(start_pos) = self.drag_start_pos {
+                let distance = ((pos.x - start_pos.x).pow(2) + (pos.y - start_pos.y).pow(2)) as f64;
+                if distance.sqrt() > 5.0 {
+                    self.drag_active = true;
+                }
+            }
+
+            // Update sidebar drop highlight if drag is active
+            if self.drag_active {
+                let is_over_drop_zone = self.sidebar.is_bookmark_drop_zone(pos);
+                self.sidebar.set_drop_highlight(is_over_drop_zone);
             }
         }
 
@@ -563,7 +631,15 @@ impl App {
 
         match key {
             Key::Escape => {
-                if self.address_bar.is_active() {
+                // Cancel drag first if active
+                if self.drag_active || self.drag_source_path.is_some() {
+                    self.drag_source_path = None;
+                    self.drag_label = None;
+                    self.drag_start_pos = None;
+                    self.drag_current_pos = None;
+                    self.drag_active = false;
+                    self.sidebar.set_drop_highlight(false);
+                } else if self.address_bar.is_active() {
                     self.address_bar.cancel();
                 } else {
                     self.should_quit = true;
@@ -1097,12 +1173,69 @@ impl App {
         // Draw toolbar tooltip overlay (on top of other UI)
         self.toolbar.render_tooltip_overlay(&self.renderer)?;
 
+        // Draw drag label overlay (on top of other UI)
+        self.render_drag_label()?;
+
         // Draw help modal overlay (on top of everything)
         self.help_modal.render(&self.renderer)?;
 
         // Flush and copy to window
         self.renderer.flush();
         self.blit_surface()?;
+
+        Ok(())
+    }
+
+    /// Render the drag label overlay when dragging a folder.
+    fn render_drag_label(&self) -> Result<()> {
+        // Only render if drag is active and we have a label
+        if !self.drag_active {
+            return Ok(());
+        }
+
+        let (label, pos) = match (&self.drag_label, self.drag_current_pos) {
+            (Some(label), Some(pos)) => (label, pos),
+            _ => return Ok(()),
+        };
+
+        let theme = self.renderer.theme();
+
+        // Create text style for the drag label
+        let text_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.item_foreground);
+
+        // Measure the text to size the background
+        let text_size = self.renderer.measure_text(label, &text_style)?;
+
+        // Position the label slightly offset from the cursor
+        let label_x = pos.x + 16;
+        let label_y = pos.y + 8;
+        let padding = 8;
+
+        // Draw background with rounded appearance
+        let bg_rect = Rect::new(
+            label_x - padding,
+            label_y - padding / 2,
+            text_size.width + (padding * 2) as u32,
+            text_size.height + padding as u32,
+        );
+
+        // Semi-transparent dark background
+        let bg_color = gartk_core::Color::from_u8(40, 40, 45, 230);
+        self.renderer.fill_rect(bg_rect, bg_color)?;
+
+        // Border
+        let border_color = theme.selection_background.with_alpha(0.8);
+        self.renderer.stroke_rect(bg_rect, border_color, 1.0)?;
+
+        // Folder icon prefix
+        let icon_style = text_style.clone().color(theme.selection_background);
+        self.renderer.text("*", label_x as f64, label_y as f64, &icon_style)?;
+
+        // Draw the text
+        self.renderer.text(label, (label_x + 14) as f64, label_y as f64, &text_style)?;
 
         Ok(())
     }

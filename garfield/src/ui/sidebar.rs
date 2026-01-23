@@ -39,6 +39,10 @@ pub struct Sidebar {
     padding: u32,
     /// Path to bookmarks file.
     bookmarks_path: PathBuf,
+    /// Y coordinate where bookmarks section starts (for drop zone detection).
+    bookmarks_section_y: i32,
+    /// Whether to show drop highlight on bookmarks section.
+    drop_highlight: bool,
 }
 
 impl Sidebar {
@@ -58,6 +62,8 @@ impl Sidebar {
             item_height: 28,
             padding: 8,
             bookmarks_path,
+            bookmarks_section_y: 0,
+            drop_highlight: false,
         };
         sidebar.populate_default_places();
         sidebar.load_bookmarks();
@@ -373,6 +379,26 @@ impl Sidebar {
         self.hovered = None;
     }
 
+    /// Check if the given position is within the bookmarks drop zone.
+    pub fn is_bookmark_drop_zone(&self, pos: Point) -> bool {
+        if !self.visible {
+            return false;
+        }
+
+        // Check if within sidebar bounds
+        if !self.bounds.contains_point(pos) {
+            return false;
+        }
+
+        // Check if below the bookmarks section start
+        pos.y >= self.bookmarks_section_y
+    }
+
+    /// Set whether to show the drop highlight on the bookmarks section.
+    pub fn set_drop_highlight(&mut self, highlight: bool) {
+        self.drop_highlight = highlight;
+    }
+
     /// Render the sidebar.
     pub fn render(&mut self, renderer: &Renderer) -> anyhow::Result<()> {
         if !self.visible {
@@ -434,6 +460,20 @@ impl Sidebar {
             1.0,
         )?;
         y += 8;
+
+        // Store the bookmarks section start for drop zone detection
+        self.bookmarks_section_y = y;
+
+        // Draw drop highlight if active
+        if self.drop_highlight {
+            let highlight_rect = Rect::new(
+                self.bounds.x,
+                y,
+                self.bounds.width,
+                (self.bounds.y + self.bounds.height as i32 - y) as u32,
+            );
+            renderer.fill_rect(highlight_rect, theme.selection_background.with_alpha(0.2))?;
+        }
 
         // Header
         let header_x = self.bounds.x + self.padding as i32;

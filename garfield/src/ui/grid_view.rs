@@ -316,6 +316,25 @@ impl GridView {
         }
     }
 
+    /// Get the entry at the given position (for drag detection).
+    pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
+        if !self.bounds.contains_point(pos) {
+            return None;
+        }
+
+        let visible = self.visible_entries();
+        let start_index = self.scroll_offset * self.columns;
+        let end_index = (start_index + self.visible_rows() * self.columns).min(visible.len());
+
+        for i in start_index..end_index {
+            if self.cell_bounds(i).contains_point(pos) {
+                return visible.get(i).copied();
+            }
+        }
+
+        None
+    }
+
     /// Handle cell click. Returns index of clicked cell if valid.
     pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
         if !self.bounds.contains_point(pos) {

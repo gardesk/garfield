@@ -166,25 +166,92 @@ impl Breadcrumb {
         renderer.text(">", (self.bounds.x + 8 + button_width) as f64, button_y as f64, &forward_style)?;
 
         // Start position for path segments (after buttons)
-        let mut x = self.bounds.x + 8 + button_width * 2 + 8;
+        let start_x = self.bounds.x + 8 + button_width * 2 + 8;
         let text_y = self.bounds.y + (self.bounds.height as i32 - theme.font_size as i32) / 2;
+        let available_width = (self.bounds.x + self.bounds.width as i32 - start_x - 16) as u32;
 
         // Check if first segment is root "/" for separator logic
         let first_is_root = self.segments.first().map(|s| s.text == "/").unwrap_or(false);
 
-        // Measure and render segments
-        for (i, segment) in self.segments.iter_mut().enumerate() {
-            // Add separator before non-root segments (but not after root "/")
+        // Measure total width and individual segment widths
+        let ellipsis = "...";
+        let ellipsis_size = renderer.measure_text(ellipsis, &separator_style)?;
+        let sep_size = renderer.measure_text(&self.separator, &separator_style)?;
+
+        let mut segment_widths: Vec<u32> = Vec::new();
+        let mut total_width: u32 = 0;
+
+        for (i, segment) in self.segments.iter().enumerate() {
+            let seg_width = renderer.measure_text(&segment.text, &style)?.width + 4;
+            segment_widths.push(seg_width);
+
+            // Add separator width
             if i > 0 {
-                // If previous segment was root "/", just add space, not " / "
+                let sep_w = if i == 1 && first_is_root { 8 } else { sep_size.width };
+                total_width += sep_w;
+            }
+            total_width += seg_width;
+        }
+
+        // Determine which segments to skip (truncate from left)
+        let mut skip_count = 0;
+        let mut show_ellipsis = false;
+
+        if total_width > available_width && self.segments.len() > 2 {
+            // Need to truncate - always show at least root and last segment
+            let mut running_width = ellipsis_size.width + sep_size.width; // "... / "
+
+            // Start from the end and work backwards to find how many we can show
+            let mut can_show_from = self.segments.len();
+            for i in (1..self.segments.len()).rev() {
+                let seg_width = segment_widths[i] + sep_size.width;
+                if running_width + seg_width <= available_width {
+                    running_width += seg_width;
+                    can_show_from = i;
+                } else {
+                    break;
+                }
+            }
+
+            if can_show_from > 1 {
+                skip_count = can_show_from - 1; // Skip segments 1 to can_show_from-1 (keep root)
+                show_ellipsis = true;
+            }
+        }
+
+        // Render segments
+        let mut x = start_x;
+
+        for (i, segment) in self.segments.iter_mut().enumerate() {
+            // Skip truncated segments (but always show root at index 0)
+            if i > 0 && i <= skip_count {
+                // Clear bounds for skipped segments
+                segment.bounds = Rect::new(0, 0, 0, 0);
+                continue;
+            }
+
+            // Add ellipsis after root if truncating
+            if show_ellipsis && i == skip_count + 1 {
+                let sep = if first_is_root { " " } else { &self.separator };
+                let sep_w = renderer.measure_text(sep, &separator_style)?;
+                renderer.text(sep, x as f64, text_y as f64, &separator_style)?;
+                x += sep_w.width as i32;
+
+                renderer.text(ellipsis, x as f64, text_y as f64, &separator_style)?;
+                x += ellipsis_size.width as i32;
+
+                renderer.text(&self.separator, x as f64, text_y as f64, &separator_style)?;
+                x += sep_size.width as i32;
+            } else if i > 0 && !(show_ellipsis && i == skip_count + 1) {
+                // Normal separator
                 let sep = if i == 1 && first_is_root {
                     " "
                 } else {
                     &self.separator
                 };
-                let sep_size = renderer.measure_text(sep, &separator_style)?;
+                let sep_w = renderer.measure_text(sep, &separator_style)?;
                 renderer.text(sep, x as f64, text_y as f64, &separator_style)?;
-                x += sep_size.width as i32;
+                x += sep_w.width as i32;
             }
 
             // Measure segment

@@ -420,6 +420,20 @@ impl ListView {
         None
     }
 
+    /// Get the entry at the given position (for drag detection).
+    pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
+        let content = self.content_bounds();
+        if !content.contains_point(pos) {
+            return None;
+        }
+
+        let relative_y = pos.y - content.y;
+        let row_index = self.scroll_offset + (relative_y / ROW_HEIGHT as i32) as usize;
+
+        let visible = self.visible_entries();
+        visible.get(row_index).copied()
+    }
+
     /// Handle row click. Returns index of clicked row if valid.
     pub fn on_row_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
         let content = self.content_bounds();
