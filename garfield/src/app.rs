@@ -1,9 +1,9 @@
 //! Application state and event loop.
 
-use garfield::core::{read_directory, sort_entries, FileEntry, History, SortDirection, SortOrder};
-use garfield::ui::{AddressBar, Breadcrumb, ColumnView, GridView, ListView, Sidebar, StatusBar};
+use garfield::ui::pane::SplitDirection;
+use garfield::ui::{AddressBar, Breadcrumb, Pane, Sidebar, StatusBar, TabBar, TabInfo, ViewMode, TAB_BAR_HEIGHT};
 use anyhow::Result;
-use gartk_core::{InputEvent, Key, Modifiers, Point, Rect, Theme};
+use gartk_core::{InputEvent, Key, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
@@ -18,17 +18,6 @@ const SIDEBAR_WIDTH: u32 = 180;
 /// Height of the status bar.
 const STATUS_BAR_HEIGHT: u32 = 24;
 
-/// View mode for the file listing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
-    /// Detailed list view with columns.
-    List,
-    /// Grid/icon view.
-    Grid,
-    /// Miller columns view.
-    Columns,
-}
-
 /// Application state.
 pub struct App {
     /// X11 window.
@@ -37,30 +26,26 @@ pub struct App {
     renderer: Renderer,
     /// Graphics context for blitting.
     gc: u32,
-    /// Navigation history.
-    history: History,
     /// Breadcrumb path bar.
     breadcrumb: Breadcrumb,
     /// Address bar for path editing.
     address_bar: AddressBar,
     /// Places sidebar.
     sidebar: Sidebar,
-    /// List view component.
-    list_view: ListView,
-    /// Grid view component.
-    grid_view: GridView,
-    /// Column view component.
-    column_view: ColumnView,
-    /// Current view mode.
-    view_mode: ViewMode,
+    /// Tab bar component.
+    tab_bar: TabBar,
+    /// Root pane (contains all tabs/splits).
+    root_pane: Pane,
+    /// Focused pane ID.
+    focused_pane_id: u32,
+    /// Next pane ID to assign.
+    next_pane_id: u32,
     /// Status bar component.
     status_bar: StatusBar,
-    /// Sort order.
-    sort_order: SortOrder,
-    /// Sort direction.
-    sort_direction: SortDirection,
     /// Whether the app should quit.
     should_quit: bool,
+    /// Pane divider resize in progress (split pane pointer path).
+    pane_resize_path: Option<Vec<bool>>,
 }
 
 impl App {
@@ -104,11 +89,14 @@ impl App {
         let current_dir = start_dir
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
-        // Create history
-        let history = History::new(current_dir.clone());
-
-        // Create breadcrumb (spans full width, sidebar controls itself)
-        let breadcrumb_bounds = Rect::new(SIDEBAR_WIDTH as i32, 0, width - SIDEBAR_WIDTH, BREADCRUMB_HEIGHT);
+        // Create breadcrumb
+        let sidebar_w = SIDEBAR_WIDTH;
+        let breadcrumb_bounds = Rect::new(
+            sidebar_w as i32,
+            TAB_BAR_HEIGHT as i32,
+            width - sidebar_w,
+            BREADCRUMB_HEIGHT,
+        );
         let mut breadcrumb = Breadcrumb::new(breadcrumb_bounds);
         breadcrumb.set_path(&current_dir);
 
@@ -119,60 +107,69 @@ impl App {
         let sidebar_bounds = Rect::new(0, 0, SIDEBAR_WIDTH, height);
         let sidebar = Sidebar::new(sidebar_bounds);
 
+        // Create tab bar
+        let tab_bar_bounds = Rect::new(sidebar_w as i32, 0, width - sidebar_w, TAB_BAR_HEIGHT);
+        let mut tab_bar = TabBar::new(tab_bar_bounds);
+
         // Create status bar
         let status_bar_bounds = Rect::new(
-            SIDEBAR_WIDTH as i32,
+            sidebar_w as i32,
             (height - STATUS_BAR_HEIGHT) as i32,
-            width - SIDEBAR_WIDTH,
+            width - sidebar_w,
             STATUS_BAR_HEIGHT,
         );
         let mut status_bar = StatusBar::new(status_bar_bounds);
         status_bar.set_view_mode("List");
 
-        // Content area bounds (for all views)
+        // Content area bounds (for panes)
         let content_bounds = Rect::new(
-            SIDEBAR_WIDTH as i32,
-            BREADCRUMB_HEIGHT as i32,
-            width - SIDEBAR_WIDTH,
-            height - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
+            sidebar_w as i32,
+            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as i32,
+            width - sidebar_w,
+            height - TAB_BAR_HEIGHT - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
         );
 
-        // Create all three views with same bounds
-        let mut list_view = ListView::new(content_bounds);
-        let mut grid_view = GridView::new(content_bounds);
-        let mut column_view = ColumnView::new(content_bounds);
+        // Create root pane with initial tab
+        let root_pane = Pane::new_leaf(current_dir, content_bounds, 1);
+        let focused_pane_id = 1;
+        let next_pane_id = 2;
 
-        // Load initial directory
-        let mut entries = read_directory(&current_dir).unwrap_or_default();
-        sort_entries(&mut entries, SortOrder::Name, SortDirection::Ascending);
+        // Initialize tab bar with first tab
+        let tabs = vec![TabInfo {
+            title: root_pane.active_tab().map(|t| t.title()).unwrap_or_default(),
+            active: true,
+        }];
+        tab_bar.set_tabs(tabs, 0);
 
-        // Initialize all views with entries
-        list_view.set_entries(entries.clone());
-        grid_view.set_entries(entries.clone());
-        column_view.set_entries(entries.clone());
-        column_view.set_path(&current_dir, SortOrder::Name, SortDirection::Ascending);
-
-        // Initialize app
         let mut app = Self {
             window,
             renderer,
             gc,
-            history,
             breadcrumb,
             address_bar,
             sidebar,
-            list_view,
-            grid_view,
-            column_view,
-            view_mode: ViewMode::List,
+            tab_bar,
+            root_pane,
+            focused_pane_id,
+            next_pane_id,
             status_bar,
-            sort_order: SortOrder::Name,
-            sort_direction: SortDirection::Ascending,
             should_quit: false,
+            pane_resize_path: None,
         };
-        app.update_status_bar(&entries);
+
+        app.update_status_bar();
 
         Ok(app)
+    }
+
+    /// Get the focused pane.
+    fn focused_pane(&self) -> Option<&Pane> {
+        self.root_pane.leaf_by_id(self.focused_pane_id)
+    }
+
+    /// Get the focused pane (mutable).
+    fn focused_pane_mut(&mut self) -> Option<&mut Pane> {
+        self.root_pane.leaf_by_id_mut(self.focused_pane_id)
     }
 
     /// Run the application event loop.
@@ -190,64 +187,26 @@ impl App {
                 }
                 InputEvent::MousePress(mouse_event) => {
                     let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
-
-                    // Check for column resize start in list view
-                    if self.view_mode == ViewMode::List {
-                        if let Some(divider) = self.list_view.divider_at(pos) {
-                            self.list_view.start_resize(divider);
-                            ev.request_redraw();
-                            return Ok(true);
-                        }
-                    }
-
-                    self.handle_click(pos, &mouse_event.modifiers);
+                    self.handle_mouse_press(pos, &mouse_event.modifiers);
                     ev.request_redraw();
                 }
                 InputEvent::MouseRelease(_) => {
-                    // Stop column resizing
-                    if self.list_view.is_resizing() {
-                        self.list_view.stop_resize();
-                        ev.request_redraw();
-                    }
-                    // Stop rubber band selection
-                    if self.grid_view.is_dragging() {
-                        self.grid_view.stop_drag();
-                        ev.request_redraw();
-                    }
+                    self.handle_mouse_release();
+                    ev.request_redraw();
                 }
                 InputEvent::MouseMove(mouse_event) => {
                     let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
-
-                    // During list view column resize, only track the list view
-                    if self.list_view.is_resizing() {
-                        self.list_view.on_mouse_move(pos);
-                        ev.request_redraw();
-                        return Ok(!self.should_quit);
-                    }
-
-                    // During grid view rubber band, only track the grid view
-                    if self.grid_view.is_dragging() {
-                        self.grid_view.on_mouse_move(pos);
-                        ev.request_redraw();
-                        return Ok(!self.should_quit);
-                    }
-
-                    self.breadcrumb.on_mouse_move(pos);
-                    self.sidebar.on_mouse_move(pos);
-                    match self.view_mode {
-                        ViewMode::List => self.list_view.on_mouse_move(pos),
-                        ViewMode::Grid => self.grid_view.on_mouse_move(pos),
-                        ViewMode::Columns => self.column_view.on_mouse_move(pos),
-                    }
+                    self.handle_mouse_move(pos);
                     ev.request_redraw();
                 }
                 InputEvent::MouseLeave => {
                     self.breadcrumb.clear_hover();
                     self.sidebar.clear_hover();
-                    match self.view_mode {
-                        ViewMode::List => self.list_view.clear_hover(),
-                        ViewMode::Grid => self.grid_view.clear_hover(),
-                        ViewMode::Columns => self.column_view.clear_hover(),
+                    self.tab_bar.clear_hover();
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            tab.clear_hover();
+                        }
                     }
                     ev.request_redraw();
                 }
@@ -274,6 +233,120 @@ impl App {
         })?;
 
         Ok(())
+    }
+
+    /// Handle mouse press.
+    fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers) {
+        // Check tab bar clicks
+        if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
+            if is_close {
+                self.close_tab(tab_index);
+            } else {
+                self.switch_tab(tab_index);
+            }
+            return;
+        }
+
+        // Check sidebar clicks
+        if let Some(path) = self.sidebar.on_click(pos) {
+            self.navigate_to(path);
+            return;
+        }
+
+        // Check breadcrumb back button
+        if self.breadcrumb.back_button_bounds().contains_point(pos) {
+            self.go_back();
+            return;
+        }
+
+        // Check breadcrumb forward button
+        if self.breadcrumb.forward_button_bounds().contains_point(pos) {
+            self.go_forward();
+            return;
+        }
+
+        // Check breadcrumb segments
+        if let Some(path) = self.breadcrumb.on_click(pos) {
+            self.navigate_to(path);
+            return;
+        }
+
+        // Check for pane split divider resize start
+        if let Some(path) = self.root_pane.split_divider_at(pos) {
+            self.pane_resize_path = Some(path);
+            return;
+        }
+
+        // Check for column resize start in list view
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(divider) = pane.column_divider_at(pos) {
+                pane.start_resize(divider);
+                return;
+            }
+        }
+
+        // Handle pane content clicks (also check for pane focus switch)
+        if let Some(leaf) = self.root_pane.leaf_at(pos) {
+            if let Some(id) = leaf.id() {
+                if id != self.focused_pane_id {
+                    self.focused_pane_id = id;
+                    self.sync_tab_bar();
+                    self.sync_breadcrumb();
+                    self.update_status_bar();
+                }
+            }
+        }
+
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.on_click(pos, modifiers);
+            }
+        }
+    }
+
+    /// Handle mouse release.
+    fn handle_mouse_release(&mut self) {
+        // Clear pane resize
+        self.pane_resize_path = None;
+
+        if let Some(pane) = self.focused_pane_mut() {
+            if pane.is_resizing() {
+                pane.stop_resize();
+            }
+            if pane.is_dragging() {
+                pane.stop_drag();
+            }
+        }
+    }
+
+    /// Handle mouse move.
+    fn handle_mouse_move(&mut self, pos: Point) {
+        // Handle pane divider resize in progress
+        if let Some(path) = &self.pane_resize_path {
+            let path_clone = path.clone();
+            self.root_pane.adjust_split_at(&path_clone, pos);
+            return;
+        }
+
+        // Handle column resize/drag in progress
+        if let Some(pane) = self.focused_pane_mut() {
+            if pane.is_resizing() || pane.is_dragging() {
+                if let Some(tab) = pane.active_tab_mut() {
+                    tab.on_mouse_move(pos);
+                }
+                return;
+            }
+        }
+
+        self.breadcrumb.on_mouse_move(pos);
+        self.sidebar.on_mouse_move(pos);
+        self.tab_bar.on_mouse_move(pos);
+
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.on_mouse_move(pos);
+            }
+        }
     }
 
     /// Handle a key press.
@@ -306,6 +379,41 @@ impl App {
             }
         }
 
+        // Ctrl+Shift keybinds (splits)
+        if modifiers.ctrl && modifiers.shift {
+            match key {
+                Key::Char('h') | Key::Char('H') => {
+                    self.split_horizontal();
+                    return;
+                }
+                Key::Char('v') | Key::Char('V') => {
+                    self.split_vertical();
+                    return;
+                }
+                Key::Char('w') | Key::Char('W') => {
+                    self.close_pane();
+                    return;
+                }
+                Key::Left => {
+                    self.focus_pane_left();
+                    return;
+                }
+                Key::Right => {
+                    self.focus_pane_right();
+                    return;
+                }
+                Key::Up => {
+                    self.focus_pane_up();
+                    return;
+                }
+                Key::Down => {
+                    self.focus_pane_down();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Ctrl keybinds
         if modifiers.ctrl {
             match key {
@@ -321,31 +429,48 @@ impl App {
                     self.set_view_mode(ViewMode::Columns);
                     return;
                 }
-                Key::Char('a') => {
-                    // Select all in active view
-                    match self.view_mode {
-                        ViewMode::List => self.list_view.select_all(),
-                        ViewMode::Grid => self.grid_view.select_all(),
-                        ViewMode::Columns => self.column_view.select_all(),
+                Key::Char('t') | Key::Char('T') => {
+                    self.new_tab();
+                    return;
+                }
+                Key::Char('w') | Key::Char('W') => {
+                    self.close_active_tab();
+                    return;
+                }
+                Key::Tab => {
+                    self.next_tab();
+                    return;
+                }
+                Key::Char('a') | Key::Char('A') => {
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            tab.select_all();
+                        }
                     }
                     return;
                 }
-                Key::Char('b') => {
+                Key::Char('b') | Key::Char('B') => {
                     self.sidebar.toggle();
                     let size = self.renderer.size();
                     self.update_layout(size.width, size.height);
                     return;
                 }
-                Key::Char('d') => {
-                    // Toggle bookmark for current directory
-                    let current = self.history.current().clone();
-                    self.sidebar.toggle_bookmark(&current);
+                Key::Char('d') | Key::Char('D') => {
+                    if let Some(pane) = self.focused_pane() {
+                        if let Some(tab) = pane.active_tab() {
+                            let current = tab.current_path().clone();
+                            self.sidebar.toggle_bookmark(&current);
+                        }
+                    }
                     return;
                 }
-                Key::Char('l') => {
-                    // Activate address bar
-                    let current = self.history.current().clone();
-                    self.address_bar.activate(&current);
+                Key::Char('l') | Key::Char('L') => {
+                    if let Some(pane) = self.focused_pane() {
+                        if let Some(tab) = pane.active_tab() {
+                            let current = tab.current_path().clone();
+                            self.address_bar.activate(&current);
+                        }
+                    }
                     return;
                 }
                 _ => {}
@@ -364,68 +489,79 @@ impl App {
                 self.should_quit = true;
             }
             Key::Up | Key::Char('k') => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.select_prev(),
-                    ViewMode::Grid => self.grid_view.select_prev(),
-                    ViewMode::Columns => self.column_view.select_prev(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.select_prev();
+                    }
                 }
             }
             Key::Down | Key::Char('j') => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.select_next(),
-                    ViewMode::Grid => self.grid_view.select_next(),
-                    ViewMode::Columns => self.column_view.select_next(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.select_next();
+                    }
                 }
             }
             Key::Home | Key::Char('g') => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.select_first(),
-                    ViewMode::Grid => self.grid_view.select_first(),
-                    ViewMode::Columns => self.column_view.select_first(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.select_first();
+                    }
                 }
             }
             Key::End | Key::Char('G') => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.select_last(),
-                    ViewMode::Grid => self.grid_view.select_last(),
-                    ViewMode::Columns => self.column_view.select_last(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.select_last();
+                    }
                 }
             }
             Key::PageUp => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.page_up(),
-                    ViewMode::Grid => self.grid_view.page_up(),
-                    ViewMode::Columns => self.column_view.page_up(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.page_up();
+                    }
                 }
             }
             Key::PageDown => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.page_down(),
-                    ViewMode::Grid => self.grid_view.page_down(),
-                    ViewMode::Columns => self.column_view.page_down(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.page_down();
+                    }
                 }
             }
-            Key::Return | Key::Right | Key::Char('l') => {
-                // For grid view, left/right navigate within row
-                if self.view_mode == ViewMode::Grid && *key == Key::Right {
-                    self.grid_view.select_right();
-                } else {
-                    self.enter_selected();
+            Key::Return => {
+                self.enter_selected();
+            }
+            Key::Right | Key::Char('l') => {
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        if tab.view_mode() == ViewMode::Grid {
+                            tab.select_right();
+                        } else {
+                            self.enter_selected();
+                            return;
+                        }
+                    }
                 }
             }
             Key::Backspace | Key::Left | Key::Char('h') => {
-                // For grid view, left navigates within row
-                if self.view_mode == ViewMode::Grid && *key == Key::Left {
-                    self.grid_view.select_left();
-                } else {
-                    self.go_up();
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        if tab.view_mode() == ViewMode::Grid && *key == Key::Left {
+                            tab.select_left();
+                        } else {
+                            self.go_up();
+                            return;
+                        }
+                    }
                 }
             }
             Key::Char('H') => {
-                match self.view_mode {
-                    ViewMode::List => self.list_view.toggle_hidden(),
-                    ViewMode::Grid => self.grid_view.toggle_hidden(),
-                    ViewMode::Columns => self.column_view.toggle_hidden(),
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.toggle_hidden();
+                    }
                 }
             }
             Key::Char('~') => {
@@ -441,191 +577,327 @@ impl App {
         }
     }
 
-    /// Handle mouse click.
-    fn handle_click(&mut self, pos: Point, modifiers: &gartk_core::Modifiers) {
-        // Check sidebar clicks first
-        if let Some(path) = self.sidebar.on_click(pos) {
-            self.navigate_to(path);
-            return;
+    // === Tab operations ===
+
+    /// Create a new tab in the focused pane.
+    fn new_tab(&mut self) {
+        let path = if let Some(pane) = self.focused_pane() {
+            pane.active_tab().map(|t| t.current_path().clone())
+        } else {
+            None
+        };
+
+        let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        if let Some(pane) = self.focused_pane_mut() {
+            pane.add_tab(path);
         }
 
-        // Check breadcrumb back button
-        if self.breadcrumb.back_button_bounds().contains_point(pos) {
-            self.go_back();
-            return;
-        }
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
 
-        // Check breadcrumb forward button
-        if self.breadcrumb.forward_button_bounds().contains_point(pos) {
-            self.go_forward();
-            return;
-        }
-
-        // Check breadcrumb segments
-        if let Some(path) = self.breadcrumb.on_click(pos) {
-            self.navigate_to(path);
-            return;
-        }
-
-        // Handle view-specific clicks
-        match self.view_mode {
-            ViewMode::List => {
-                // Check list view header click (for sorting)
-                if let Some((order, direction)) = self.list_view.on_header_click(pos) {
-                    self.sort_order = order;
-                    self.sort_direction = direction;
-                    self.refresh();
-                    return;
-                }
-                // Check list view row click (with modifiers for multi-select)
-                if self.list_view.on_row_click(pos, modifiers).is_some() {
-                    return;
-                }
+    /// Close the active tab in the focused pane.
+    fn close_active_tab(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            let should_remove = pane.close_active_tab();
+            if should_remove {
+                // For now, just quit if last tab is closed
+                // TODO: Handle pane removal properly
+                self.should_quit = true;
+                return;
             }
-            ViewMode::Grid => {
-                if self.grid_view.on_click(pos, modifiers).is_some() {
-                    return;
-                }
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Close tab at index.
+    fn close_tab(&mut self, index: usize) {
+        if let Some(pane) = self.focused_pane_mut() {
+            let should_remove = pane.close_tab(index);
+            if should_remove {
+                self.should_quit = true;
+                return;
             }
-            ViewMode::Columns => {
-                if self.column_view.on_click(pos, modifiers).is_some() {
-                    return;
-                }
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Switch to tab at index.
+    fn switch_tab(&mut self, index: usize) {
+        if let Some(pane) = self.focused_pane_mut() {
+            pane.set_active_tab(index);
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Cycle to next tab.
+    fn next_tab(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            pane.next_tab();
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    // === Split operations ===
+
+    /// Split the focused pane horizontally.
+    fn split_horizontal(&mut self) {
+        let path = if let Some(pane) = self.focused_pane() {
+            pane.active_tab().map(|t| t.current_path().clone())
+        } else {
+            None
+        };
+
+        let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let new_id = self.next_pane_id;
+
+        if let Some(pane) = self.focused_pane_mut() {
+            if pane.split(SplitDirection::Horizontal, path, new_id).is_some() {
+                self.next_pane_id += 1;
+                self.focused_pane_id = new_id;
             }
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Split the focused pane vertically.
+    fn split_vertical(&mut self) {
+        let path = if let Some(pane) = self.focused_pane() {
+            pane.active_tab().map(|t| t.current_path().clone())
+        } else {
+            None
+        };
+
+        let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let new_id = self.next_pane_id;
+
+        if let Some(pane) = self.focused_pane_mut() {
+            if pane.split(SplitDirection::Vertical, path, new_id).is_some() {
+                self.next_pane_id += 1;
+                self.focused_pane_id = new_id;
+            }
+        }
+
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Close the focused pane.
+    fn close_pane(&mut self) {
+        // TODO: Implement proper pane removal
+        // For now, this is a no-op as it requires tree manipulation
+    }
+
+    /// Focus the pane to the left.
+    fn focus_pane_left(&mut self) {
+        if let Some(new_id) = self.root_pane.pane_left_of(self.focused_pane_id) {
+            self.focused_pane_id = new_id;
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.update_status_bar();
         }
     }
 
-    /// Enter the selected entry (open directory).
+    /// Focus the pane to the right.
+    fn focus_pane_right(&mut self) {
+        if let Some(new_id) = self.root_pane.pane_right_of(self.focused_pane_id) {
+            self.focused_pane_id = new_id;
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.update_status_bar();
+        }
+    }
+
+    /// Focus the pane above.
+    fn focus_pane_up(&mut self) {
+        if let Some(new_id) = self.root_pane.pane_above(self.focused_pane_id) {
+            self.focused_pane_id = new_id;
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.update_status_bar();
+        }
+    }
+
+    /// Focus the pane below.
+    fn focus_pane_down(&mut self) {
+        if let Some(new_id) = self.root_pane.pane_below(self.focused_pane_id) {
+            self.focused_pane_id = new_id;
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.update_status_bar();
+        }
+    }
+
+    // === Navigation ===
+
+    /// Enter the selected entry.
     fn enter_selected(&mut self) {
-        let entry = match self.view_mode {
-            ViewMode::List => self.list_view.selected_entry().cloned(),
-            ViewMode::Grid => self.grid_view.selected_entry().cloned(),
-            ViewMode::Columns => self.column_view.selected_entry().cloned(),
-        };
-
-        if let Some(entry) = entry {
-            if entry.is_dir() {
-                self.navigate_to(entry.path);
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.enter_selected();
             }
-            // TODO: Open files with default application
         }
+        self.sync_breadcrumb();
+        self.update_status_bar();
     }
 
-    /// Set the current view mode.
-    fn set_view_mode(&mut self, mode: ViewMode) {
-        if self.view_mode == mode {
-            return;
+    /// Navigate to a directory.
+    fn navigate_to(&mut self, path: PathBuf) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.navigate_to(path);
+            }
         }
-
-        self.view_mode = mode;
-        let mode_name = match mode {
-            ViewMode::List => "List",
-            ViewMode::Grid => "Grid",
-            ViewMode::Columns => "Columns",
-        };
-        self.status_bar.set_view_mode(mode_name);
-
-        // Sync selection state between views on switch
-        // (For now, just refresh to ensure consistency)
-        self.refresh();
-    }
-
-    /// Navigate to parent directory.
-    fn go_up(&mut self) {
-        if let Some(parent) = self.history.current().parent() {
-            self.navigate_to(parent.to_path_buf());
-        }
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
     }
 
     /// Go back in history.
     fn go_back(&mut self) {
-        if let Some(path) = self.history.go_back().cloned() {
-            self.load_directory(&path);
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.go_back();
+            }
         }
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
     }
 
     /// Go forward in history.
     fn go_forward(&mut self) {
-        if let Some(path) = self.history.go_forward().cloned() {
-            self.load_directory(&path);
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.go_forward();
+            }
         }
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
     }
 
-    /// Navigate to a new directory (adds to history).
-    fn navigate_to(&mut self, path: PathBuf) {
-        if path.is_dir() && path != *self.history.current() {
-            self.history.navigate(path.clone());
-            self.load_directory(&path);
+    /// Go up to parent directory.
+    fn go_up(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.go_up();
+            }
         }
+        self.sync_breadcrumb();
+        self.update_status_bar();
     }
 
-    /// Load a directory (without modifying history).
-    fn load_directory(&mut self, path: &PathBuf) {
-        self.breadcrumb.set_path(path);
-        let mut entries = read_directory(path).unwrap_or_default();
-        sort_entries(&mut entries, self.sort_order, self.sort_direction);
-
-        // Update all views with entries
-        self.list_view.set_entries(entries.clone());
-        self.grid_view.set_entries(entries.clone());
-        self.column_view.set_entries(entries.clone());
-        self.column_view.set_path(path, self.sort_order, self.sort_direction);
-
-        self.update_status_bar(&entries);
-    }
-
-    /// Update status bar with current directory info.
-    fn update_status_bar(&mut self, entries: &[FileEntry]) {
-        let visible_count = entries.iter().filter(|e| !e.hidden).count();
-        let (selected_count, selected_size) = match self.view_mode {
-            ViewMode::List => {
-                let count = self.list_view.selection_count();
-                let size: u64 = self.list_view.selected_entries().iter().map(|e| e.size).sum();
-                (count, size)
-            }
-            ViewMode::Grid => {
-                let count = self.grid_view.selection_count();
-                let size: u64 = self.grid_view.selected_entries().iter().map(|e| e.size).sum();
-                (count, size)
-            }
-            ViewMode::Columns => {
-                let count = self.column_view.selection_count();
-                let size: u64 = self.column_view.selected_entries().iter().map(|e| e.size).sum();
-                (count, size)
-            }
-        };
-        self.status_bar.update(visible_count, selected_count, selected_size);
-    }
-
-    /// Refresh the current directory listing.
+    /// Refresh the current directory.
     fn refresh(&mut self) {
-        let path = self.history.current().clone();
-        self.load_directory(&path);
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.refresh();
+            }
+        }
+        self.update_status_bar();
     }
 
-    /// Update layout based on sidebar visibility.
+    /// Set the view mode for the active tab.
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.set_view_mode(mode);
+            }
+        }
+        self.status_bar.set_view_mode(mode.name());
+        self.update_status_bar();
+    }
+
+    // === Sync helpers ===
+
+    /// Sync tab bar with focused pane's tabs.
+    fn sync_tab_bar(&mut self) {
+        if let Some(pane) = self.focused_pane() {
+            let tabs: Vec<TabInfo> = pane
+                .tabs()
+                .iter()
+                .enumerate()
+                .map(|(i, t)| TabInfo {
+                    title: t.title(),
+                    active: i == pane.active_tab_index(),
+                })
+                .collect();
+            self.tab_bar.set_tabs(tabs, pane.active_tab_index());
+        }
+    }
+
+    /// Sync breadcrumb with active tab's path.
+    fn sync_breadcrumb(&mut self) {
+        let path = self.focused_pane()
+            .and_then(|pane| pane.active_tab())
+            .map(|tab| tab.current_path().clone());
+
+        if let Some(path) = path {
+            self.breadcrumb.set_path(&path);
+        }
+    }
+
+    /// Update status bar.
+    fn update_status_bar(&mut self) {
+        let stats = self.focused_pane()
+            .and_then(|pane| pane.active_tab())
+            .map(|tab| (tab.visible_count(), tab.selection_count(), tab.selected_size(), tab.view_mode().name()));
+
+        if let Some((visible_count, selected_count, selected_size, view_mode)) = stats {
+            self.status_bar.update(visible_count, selected_count, selected_size);
+            self.status_bar.set_view_mode(view_mode);
+        }
+    }
+
+    /// Update layout.
     fn update_layout(&mut self, width: u32, height: u32) {
         let sidebar_w = self.sidebar.width();
-        let bar_bounds = Rect::new(
+
+        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
+
+        self.tab_bar.set_bounds(Rect::new(
             sidebar_w as i32,
             0,
             width - sidebar_w,
+            TAB_BAR_HEIGHT,
+        ));
+
+        let breadcrumb_bounds = Rect::new(
+            sidebar_w as i32,
+            TAB_BAR_HEIGHT as i32,
+            width - sidebar_w,
             BREADCRUMB_HEIGHT,
         );
+        self.breadcrumb.set_bounds(breadcrumb_bounds);
+        self.address_bar.set_bounds(breadcrumb_bounds);
 
         let content_bounds = Rect::new(
             sidebar_w as i32,
-            BREADCRUMB_HEIGHT as i32,
+            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as i32,
             width - sidebar_w,
-            height - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
+            height - TAB_BAR_HEIGHT - BREADCRUMB_HEIGHT - STATUS_BAR_HEIGHT,
         );
+        self.root_pane.set_bounds(content_bounds);
 
-        self.sidebar.set_bounds(Rect::new(0, 0, SIDEBAR_WIDTH, height));
-        self.breadcrumb.set_bounds(bar_bounds);
-        self.address_bar.set_bounds(bar_bounds);
-        self.list_view.set_bounds(content_bounds);
-        self.grid_view.set_bounds(content_bounds);
-        self.column_view.set_bounds(content_bounds);
         self.status_bar.set_bounds(Rect::new(
             sidebar_w as i32,
             (height - STATUS_BAR_HEIGHT) as i32,
@@ -646,33 +918,37 @@ impl App {
         // Draw sidebar
         self.sidebar.render(&self.renderer)?;
 
+        // Draw tab bar
+        self.tab_bar.render(&self.renderer)?;
+
         // Draw breadcrumb or address bar
         if self.address_bar.is_active() {
             self.address_bar.render(&self.renderer)?;
         } else {
-            self.breadcrumb.render(
-                &self.renderer,
-                self.history.can_go_back(),
-                self.history.can_go_forward(),
-            )?;
+            let (can_back, can_forward) = if let Some(pane) = self.focused_pane() {
+                if let Some(tab) = pane.active_tab() {
+                    (tab.can_go_back(), tab.can_go_forward())
+                } else {
+                    (false, false)
+                }
+            } else {
+                (false, false)
+            };
+            self.breadcrumb.render(&self.renderer, can_back, can_forward)?;
         }
 
         // Draw separator line under breadcrumb
         self.renderer.line(
             sidebar_w as f64,
-            BREADCRUMB_HEIGHT as f64,
+            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as f64,
             size.width as f64,
-            BREADCRUMB_HEIGHT as f64,
+            (TAB_BAR_HEIGHT + BREADCRUMB_HEIGHT) as f64,
             theme.border,
             1.0,
         )?;
 
-        // Draw active view
-        match self.view_mode {
-            ViewMode::List => self.list_view.render(&self.renderer)?,
-            ViewMode::Grid => self.grid_view.render(&self.renderer)?,
-            ViewMode::Columns => self.column_view.render(&self.renderer)?,
-        }
+        // Draw pane content
+        self.root_pane.render(&self.renderer, Some(self.focused_pane_id))?;
 
         // Draw status bar
         self.status_bar.render(&self.renderer)?;
@@ -689,7 +965,6 @@ impl App {
         let size = self.renderer.size();
         let conn = self.window.connection();
 
-        // Get the surface data by creating a temp surface and copying
         let ctx = self.renderer.context()?;
         ctx.target().flush();
 
