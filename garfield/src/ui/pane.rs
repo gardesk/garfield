@@ -205,6 +205,28 @@ impl Pane {
         }
     }
 
+    /// Equalize split ratio at the given path (set to 0.5).
+    pub fn equalize_split_at(&mut self, path: &[bool]) {
+        if path.is_empty() {
+            // Equalize this split
+            if let Pane::Split { ratio, bounds, .. } = self {
+                *ratio = 0.5;
+                // Recalculate child bounds
+                let current_bounds = *bounds;
+                self.set_bounds(current_bounds);
+            }
+        } else {
+            // Navigate to child
+            if let Pane::Split { first, second, .. } = self {
+                if path[0] {
+                    first.equalize_split_at(&path[1..]);
+                } else {
+                    second.equalize_split_at(&path[1..]);
+                }
+            }
+        }
+    }
+
     /// Get split direction for this pane.
     pub fn split_direction(&self) -> Option<SplitDirection> {
         match self {

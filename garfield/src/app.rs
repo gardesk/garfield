@@ -356,9 +356,28 @@ impl App {
             return;
         }
 
-        // Check for pane split divider resize start
+        // Check for pane split divider - double-click to equalize, single-click to resize
         if let Some(path) = self.root_pane.split_divider_at(pos) {
-            self.pane_resize_path = Some(path);
+            let now = Instant::now();
+            let is_double_click = if let (Some(last_time), Some(last_pos)) = (self.last_click_time, self.last_click_pos) {
+                let elapsed = now.duration_since(last_time);
+                let distance = ((pos.x - last_pos.x).pow(2) + (pos.y - last_pos.y).pow(2)) as f64;
+                elapsed.as_millis() < 400 && distance.sqrt() < 10.0
+            } else {
+                false
+            };
+
+            if is_double_click {
+                // Double-click: equalize the split
+                self.root_pane.equalize_split_at(&path);
+                self.last_click_time = None;
+                self.last_click_pos = None;
+            } else {
+                // Single click: start resize
+                self.pane_resize_path = Some(path);
+                self.last_click_time = Some(now);
+                self.last_click_pos = Some(pos);
+            }
             return;
         }
 
