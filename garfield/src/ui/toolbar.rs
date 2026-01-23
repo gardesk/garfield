@@ -250,10 +250,11 @@ impl Toolbar {
 
         let tooltip_rect = Rect::new(tooltip_x, tooltip_y, tooltip_width, tooltip_height);
 
-        // Draw tooltip background with solid color (full opacity)
-        let bg_color = gartk_core::Color::from_u8(40, 40, 45, 255);
+        // Draw tooltip background with solid dark color and visible border
+        let bg_color = gartk_core::Color::from_u8(30, 30, 35, 255);
+        let border_color = gartk_core::Color::from_u8(100, 100, 110, 255);
         renderer.fill_rounded_rect(tooltip_rect, 4.0, bg_color)?;
-        renderer.stroke_rounded_rect(tooltip_rect, 4.0, theme.border, 1.0)?;
+        renderer.stroke_rounded_rect(tooltip_rect, 4.0, border_color, 1.5)?;
 
         // Draw tooltip text
         renderer.text(
