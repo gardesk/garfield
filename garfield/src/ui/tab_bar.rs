@@ -277,6 +277,19 @@ impl TabBar {
         self.dragging_tab
     }
 
+    /// Get the tab index at a given point (if any).
+    pub fn tab_at_point(&self, pos: Point) -> Option<usize> {
+        if !self.bounds.contains_point(pos) {
+            return None;
+        }
+        for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
+            if tab_bounds.contains_point(pos) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// Render the tab bar.
     pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
         let theme = renderer.theme();

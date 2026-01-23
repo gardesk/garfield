@@ -3,7 +3,7 @@
 use garfield::ui::pane::SplitDirection;
 use garfield::ui::{AddressBar, Breadcrumb, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
-use gartk_core::{InputEvent, Key, Point, Rect, Theme};
+use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
@@ -232,7 +232,7 @@ impl App {
                 }
                 InputEvent::MousePress(mouse_event) => {
                     let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
-                    self.handle_mouse_press(pos, &mouse_event.modifiers);
+                    self.handle_mouse_press(pos, &mouse_event.modifiers, mouse_event.button);
                     ev.request_redraw();
                 }
                 InputEvent::MouseRelease(mouse_event) => {
@@ -283,25 +283,35 @@ impl App {
     }
 
     /// Handle mouse press.
-    fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers) {
+    fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers, button: Option<MouseButton>) {
         // Check help modal first (clicking outside closes it)
         if self.help_modal.on_click(pos) {
             return;
         }
 
-        // Check tab bar clicks - try to start tab drag first
-        if self.tab_bar.start_drag(pos) {
-            // Started potential tab drag, don't switch yet
-            return;
+        // Handle middle-click on tab bar to close tab
+        if button == Some(MouseButton::Middle) {
+            if let Some(index) = self.tab_bar.tab_at_point(pos) {
+                self.close_tab(index);
+                return;
+            }
         }
 
-        // Handle tab bar close button clicks (non-drag)
-        if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
-            if is_close {
-                self.close_tab(tab_index);
+        // Check tab bar clicks - try to start tab drag first (left click only)
+        if button == Some(MouseButton::Left) || button.is_none() {
+            if self.tab_bar.start_drag(pos) {
+                // Started potential tab drag, don't switch yet
+                return;
             }
-            // Tab selection happens on mouse release if not dragged
-            return;
+
+            // Handle tab bar close button clicks (non-drag)
+            if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
+                if is_close {
+                    self.close_tab(tab_index);
+                }
+                // Tab selection happens on mouse release if not dragged
+                return;
+            }
         }
 
         // Check toolbar clicks
