@@ -194,7 +194,7 @@ impl Toolbar {
         self.hovered.map(|i| self.buttons[i].tooltip)
     }
 
-    /// Render the toolbar.
+    /// Render the toolbar (without tooltip - call render_tooltip_overlay separately).
     pub fn render(&self, renderer: &Renderer) -> Result<()> {
         let theme = renderer.theme();
 
@@ -216,13 +216,17 @@ impl Toolbar {
             self.render_button(renderer, button, i, theme)?;
         }
 
-        // Draw tooltip if hovering
+        Ok(())
+    }
+
+    /// Render tooltip overlay (call after all other UI to ensure it's on top).
+    pub fn render_tooltip_overlay(&self, renderer: &Renderer) -> Result<()> {
         if let Some(hovered_idx) = self.hovered {
             if let Some(button) = self.buttons.get(hovered_idx) {
+                let theme = renderer.theme();
                 self.render_tooltip(renderer, button, theme)?;
             }
         }
-
         Ok(())
     }
 
