@@ -357,12 +357,58 @@ impl ColumnView {
         }
     }
 
-    /// Handle click in current column. Returns clicked index.
+    /// Handle click in any column. Returns clicked index in current column (if applicable).
     pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
+        // Check parent column click - navigate up
+        if let Some(ref parent) = self.parent_column {
+            if parent.bounds.contains_point(pos) {
+                let visible = parent.visible_entries(self.show_hidden);
+                let visible_rows = parent.visible_rows();
+
+                for i in parent.scroll_offset..(parent.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = parent.bounds.y + ((i - parent.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(parent.bounds.x, y, parent.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        // Clicking in parent navigates to that item
+                        if let Some(entry) = visible.get(i) {
+                            if entry.is_dir() {
+                                // This will be handled by the Tab to navigate
+                                self.focused_column = 0;
+                            }
+                        }
+                        return None;
+                    }
+                }
+                return None;
+            }
+        }
+
+        // Check preview column click - navigate into
+        if let Some(ref preview) = self.preview_column {
+            if preview.bounds.contains_point(pos) {
+                let visible = preview.visible_entries(self.show_hidden);
+                let visible_rows = preview.visible_rows();
+
+                for i in preview.scroll_offset..(preview.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = preview.bounds.y + ((i - preview.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(preview.bounds.x, y, preview.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        self.focused_column = 2;
+                        return None;
+                    }
+                }
+                return None;
+            }
+        }
+
+        // Check current column click
         if !self.current_column.bounds.contains_point(pos) {
             return None;
         }
 
+        self.focused_column = 1;
         let visible = self.visible_entries();
         let visible_rows = self.current_column.visible_rows();
 
