@@ -5,14 +5,64 @@ use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, TextAlign, TextStyle};
 use std::collections::HashSet;
 
-/// Size of each grid cell.
-pub const CELL_SIZE: u32 = 100;
-
-/// Icon size within each cell.
-pub const ICON_SIZE: u32 = 48;
-
 /// Padding around cells.
 pub const CELL_PADDING: u32 = 8;
+
+/// Icon size setting for grid view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl IconSize {
+    /// Get the cell size for this icon size.
+    pub fn cell_size(&self) -> u32 {
+        match self {
+            IconSize::Small => 70,
+            IconSize::Medium => 100,
+            IconSize::Large => 140,
+        }
+    }
+
+    /// Get the icon size within the cell.
+    pub fn icon_size(&self) -> u32 {
+        match self {
+            IconSize::Small => 32,
+            IconSize::Medium => 48,
+            IconSize::Large => 64,
+        }
+    }
+
+    /// Get the font size for labels.
+    pub fn font_size(&self) -> f64 {
+        match self {
+            IconSize::Small => 10.0,
+            IconSize::Medium => 12.0,
+            IconSize::Large => 14.0,
+        }
+    }
+
+    /// Cycle to the next size.
+    pub fn next(&self) -> Self {
+        match self {
+            IconSize::Small => IconSize::Medium,
+            IconSize::Medium => IconSize::Large,
+            IconSize::Large => IconSize::Small,
+        }
+    }
+
+    /// Get display name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            IconSize::Small => "Small",
+            IconSize::Medium => "Medium",
+            IconSize::Large => "Large",
+        }
+    }
+}
 
 /// Grid view for displaying file entries as icons.
 pub struct GridView {
@@ -38,12 +88,15 @@ pub struct GridView {
     drag_start: Option<Point>,
     /// Rubber band current position.
     drag_current: Option<Point>,
+    /// Icon size setting.
+    icon_size: IconSize,
 }
 
 impl GridView {
     /// Create a new grid view.
     pub fn new(bounds: Rect) -> Self {
-        let columns = Self::calculate_columns(bounds.width);
+        let icon_size = IconSize::default();
+        let columns = Self::calculate_columns_for_size(bounds.width, icon_size);
         Self {
             entries: Vec::new(),
             focused: 0,
@@ -56,12 +109,35 @@ impl GridView {
             hovered: None,
             drag_start: None,
             drag_current: None,
+            icon_size,
         }
     }
 
+    /// Calculate number of columns that fit in the given width for a specific icon size.
+    fn calculate_columns_for_size(width: u32, icon_size: IconSize) -> usize {
+        let cell_size = icon_size.cell_size();
+        ((width - CELL_PADDING) / (cell_size + CELL_PADDING)).max(1) as usize
+    }
+
     /// Calculate number of columns that fit in the given width.
-    fn calculate_columns(width: u32) -> usize {
-        ((width - CELL_PADDING) / (CELL_SIZE + CELL_PADDING)).max(1) as usize
+    fn calculate_columns(&self, width: u32) -> usize {
+        Self::calculate_columns_for_size(width, self.icon_size)
+    }
+
+    /// Get the current icon size.
+    pub fn icon_size(&self) -> IconSize {
+        self.icon_size
+    }
+
+    /// Set the icon size.
+    pub fn set_icon_size(&mut self, size: IconSize) {
+        self.icon_size = size;
+        self.columns = self.calculate_columns(self.bounds.width);
+    }
+
+    /// Cycle to the next icon size.
+    pub fn cycle_icon_size(&mut self) {
+        self.set_icon_size(self.icon_size.next());
     }
 
     /// Set the entries to display.
@@ -104,7 +180,8 @@ impl GridView {
 
     /// Get the number of visible rows that fit in the view.
     fn visible_rows(&self) -> usize {
-        (self.bounds.height / (CELL_SIZE + CELL_PADDING)).max(1) as usize
+        let cell_size = self.icon_size.cell_size();
+        (self.bounds.height / (cell_size + CELL_PADDING)).max(1) as usize
     }
 
     /// Get current sort settings (grid view doesn't track these, uses external).
@@ -226,7 +303,7 @@ impl GridView {
     /// Update bounds.
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
-        self.columns = Self::calculate_columns(bounds.width);
+        self.columns = self.calculate_columns(bounds.width);
     }
 
     /// Get cell bounds for an index.
@@ -234,11 +311,12 @@ impl GridView {
         let visible_index = index.saturating_sub(self.scroll_offset * self.columns);
         let col = visible_index % self.columns;
         let row = visible_index / self.columns;
+        let cell_size = self.icon_size.cell_size();
 
-        let x = self.bounds.x + CELL_PADDING as i32 + (col as i32 * (CELL_SIZE + CELL_PADDING) as i32);
-        let y = self.bounds.y + CELL_PADDING as i32 + (row as i32 * (CELL_SIZE + CELL_PADDING) as i32);
+        let x = self.bounds.x + CELL_PADDING as i32 + (col as i32 * (cell_size + CELL_PADDING) as i32);
+        let y = self.bounds.y + CELL_PADDING as i32 + (row as i32 * (cell_size + CELL_PADDING) as i32);
 
-        Rect::new(x, y, CELL_SIZE, CELL_SIZE)
+        Rect::new(x, y, cell_size, cell_size)
     }
 
     /// Handle mouse move for hover effects and rubber band drag.
@@ -448,14 +526,20 @@ impl GridView {
                 }
             };
 
+            // Scale icon font size based on icon size setting
+            let icon_font_size = match self.icon_size {
+                IconSize::Small => 24.0,
+                IconSize::Medium => 32.0,
+                IconSize::Large => 48.0,
+            };
             let icon_style = TextStyle::new()
                 .font_family(&theme.font_family)
-                .font_size(32.0)
+                .font_size(icon_font_size)
                 .color(icon_color);
 
             // Center icon horizontally in cell
             let icon_center_x = cell.x + cell.width as i32 / 2;
-            let icon_center_y = cell.y + 10 + 16; // 10px top padding + half icon height
+            let icon_center_y = cell.y + 10 + (icon_font_size / 2.0) as i32;
             renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
 
             // File name (truncated)
@@ -467,9 +551,10 @@ impl GridView {
                 theme.item_foreground
             };
 
+            let name_font_size = self.icon_size.font_size();
             let name_style = TextStyle::new()
                 .font_family(&theme.font_family)
-                .font_size(theme.font_size - 1.0)
+                .font_size(name_font_size)
                 .color(name_color);
 
             // Use Pango CENTER alignment for proper text centering (like Dolphin/Nautilus)
@@ -479,11 +564,12 @@ impl GridView {
                 .max_width((cell.width - 8) as i32);
 
             // Rectangle for the text area below the icon
+            let icon_size = self.icon_size.icon_size();
             let text_rect = Rect::new(
                 cell.x + 4,
-                cell.y + ICON_SIZE as i32 + 8,
+                cell.y + icon_size as i32 + 8,
                 cell.width - 8,
-                cell.height - ICON_SIZE - 12,
+                cell.height - icon_size - 12,
             );
             // Add "@" suffix for symlinks
             let display_name = if entry.is_symlink {

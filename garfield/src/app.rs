@@ -618,6 +618,15 @@ impl App {
                     self.set_view_mode(ViewMode::Columns);
                     return;
                 }
+                Key::Char('+') | Key::Char('=') => {
+                    // Cycle icon size in grid view
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            tab.cycle_icon_size();
+                        }
+                    }
+                    return;
+                }
                 Key::Char('t') | Key::Char('T') => {
                     self.new_tab();
                     return;

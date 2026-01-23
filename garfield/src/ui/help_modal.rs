@@ -34,6 +34,7 @@ const KEYBINDS: &[(&str, &[KeybindEntry])] = &[
         KeybindEntry { key: "Ctrl+2", description: "Grid view" },
         KeybindEntry { key: "Ctrl+3", description: "Column view" },
         KeybindEntry { key: "Ctrl+H", description: "Toggle hidden files" },
+        KeybindEntry { key: "Ctrl+=", description: "Cycle icon size" },
     ]),
     ("Tabs & Panes", &[
         KeybindEntry { key: "Ctrl+T", description: "New tab" },

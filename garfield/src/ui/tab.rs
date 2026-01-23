@@ -103,6 +103,11 @@ impl Tab {
         self.view_mode = mode;
     }
 
+    /// Cycle icon size in grid view.
+    pub fn cycle_icon_size(&mut self) {
+        self.grid_view.cycle_icon_size();
+    }
+
     /// Get history reference.
     pub fn history(&self) -> &History {
         &self.history
