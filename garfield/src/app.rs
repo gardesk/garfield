@@ -597,6 +597,16 @@ impl App {
                     self.go_forward();
                     return;
                 }
+                // Alt+1-9 to jump to tab N
+                Key::Char('1') => { self.switch_tab(0); return; }
+                Key::Char('2') => { self.switch_tab(1); return; }
+                Key::Char('3') => { self.switch_tab(2); return; }
+                Key::Char('4') => { self.switch_tab(3); return; }
+                Key::Char('5') => { self.switch_tab(4); return; }
+                Key::Char('6') => { self.switch_tab(5); return; }
+                Key::Char('7') => { self.switch_tab(6); return; }
+                Key::Char('8') => { self.switch_tab(7); return; }
+                Key::Char('9') => { self.switch_tab(8); return; }
                 _ => {}
             }
         }
