@@ -12,6 +12,17 @@ const ROW_HEIGHT: u32 = 24;
 /// Minimum column width.
 const MIN_COLUMN_WIDTH: u32 = 150;
 
+/// Result of a click in the column view.
+#[derive(Debug)]
+pub enum ColumnClickResult {
+    /// Clicked in current column, selected index.
+    Selected(usize),
+    /// Request to navigate to a path.
+    Navigate(PathBuf),
+    /// No action.
+    None,
+}
+
 /// A single column in the Miller columns view.
 struct Column {
     /// Entries in this column.
@@ -357,9 +368,9 @@ impl ColumnView {
         }
     }
 
-    /// Handle click in any column. Returns clicked index in current column (if applicable).
-    pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
-        // Check parent column click - navigate up
+    /// Handle click in any column. Returns click result.
+    pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> ColumnClickResult {
+        // Check parent column click - navigate to clicked directory
         if let Some(ref parent) = self.parent_column {
             if parent.bounds.contains_point(pos) {
                 let visible = parent.visible_entries(self.show_hidden);
@@ -370,21 +381,19 @@ impl ColumnView {
                     let row = Rect::new(parent.bounds.x, y, parent.bounds.width, ROW_HEIGHT);
 
                     if row.contains_point(pos) {
-                        // Clicking in parent navigates to that item
                         if let Some(entry) = visible.get(i) {
                             if entry.is_dir() {
-                                // This will be handled by the Tab to navigate
-                                self.focused_column = 0;
+                                return ColumnClickResult::Navigate(entry.path.clone());
                             }
                         }
-                        return None;
+                        return ColumnClickResult::None;
                     }
                 }
-                return None;
+                return ColumnClickResult::None;
             }
         }
 
-        // Check preview column click - navigate into
+        // Check preview column click - navigate into clicked directory
         if let Some(ref preview) = self.preview_column {
             if preview.bounds.contains_point(pos) {
                 let visible = preview.visible_entries(self.show_hidden);
@@ -395,17 +404,21 @@ impl ColumnView {
                     let row = Rect::new(preview.bounds.x, y, preview.bounds.width, ROW_HEIGHT);
 
                     if row.contains_point(pos) {
-                        self.focused_column = 2;
-                        return None;
+                        if let Some(entry) = visible.get(i) {
+                            if entry.is_dir() {
+                                return ColumnClickResult::Navigate(entry.path.clone());
+                            }
+                        }
+                        return ColumnClickResult::None;
                     }
                 }
-                return None;
+                return ColumnClickResult::None;
             }
         }
 
         // Check current column click
         if !self.current_column.bounds.contains_point(pos) {
-            return None;
+            return ColumnClickResult::None;
         }
 
         self.focused_column = 1;
@@ -442,11 +455,11 @@ impl ColumnView {
                     self.selection_anchor = Some(i);
                 }
                 self.update_preview();
-                return Some(i);
+                return ColumnClickResult::Selected(i);
             }
         }
 
-        None
+        ColumnClickResult::None
     }
 
     /// Clear hover state.

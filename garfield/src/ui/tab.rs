@@ -1,7 +1,7 @@
 //! Tab state for a single directory view.
 
 use crate::core::{read_directory, sort_entries, FileEntry, History, SortDirection, SortOrder};
-use crate::ui::{ColumnView, GridView, ListView};
+use crate::ui::{ColumnClickResult, ColumnView, GridView, ListView};
 use gartk_core::{Modifiers, Point, Rect};
 use gartk_render::Renderer;
 use std::path::PathBuf;
@@ -329,7 +329,16 @@ impl Tab {
                 self.list_view.on_row_click(pos, modifiers).is_some()
             }
             ViewMode::Grid => self.grid_view.on_click(pos, modifiers).is_some(),
-            ViewMode::Columns => self.column_view.on_click(pos, modifiers).is_some(),
+            ViewMode::Columns => {
+                match self.column_view.on_click(pos, modifiers) {
+                    ColumnClickResult::Selected(_) => true,
+                    ColumnClickResult::Navigate(path) => {
+                        self.navigate_to(path);
+                        true
+                    }
+                    ColumnClickResult::None => false,
+                }
+            }
         }
     }
 
