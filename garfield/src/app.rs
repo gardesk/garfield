@@ -1,5 +1,10 @@
 //! Application state and event loop.
 
+use garfield::core::{
+    Clipboard, ClipboardOperation,
+    copy_files, move_files, delete_files, create_directory,
+    trash_files,
+};
 use garfield::ui::pane::SplitDirection;
 use garfield::ui::{AddressBar, Breadcrumb, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
@@ -67,6 +72,8 @@ pub struct App {
     drag_current_pos: Option<Point>,
     /// Whether drag is actively in progress (moved past threshold).
     drag_active: bool,
+    /// Clipboard for file operations.
+    clipboard: Clipboard,
 }
 
 impl App {
@@ -200,6 +207,7 @@ impl App {
             drag_start_pos: None,
             drag_current_pos: None,
             drag_active: false,
+            clipboard: Clipboard::new(),
         };
 
         app.update_status_bar();
@@ -630,9 +638,13 @@ impl App {
             }
         }
 
-        // Ctrl+Shift keybinds (splits)
+        // Ctrl+Shift keybinds (splits, new folder)
         if modifiers.ctrl && modifiers.shift {
             match key {
+                Key::Char('n') | Key::Char('N') => {
+                    self.create_new_folder();
+                    return;
+                }
                 Key::Char('h') | Key::Char('H') => {
                     self.split_horizontal();
                     return;
@@ -737,11 +749,35 @@ impl App {
                     }
                     return;
                 }
+                Key::Char('c') | Key::Char('C') => {
+                    self.copy_selected();
+                    return;
+                }
+                Key::Char('x') | Key::Char('X') => {
+                    self.cut_selected();
+                    return;
+                }
+                Key::Char('v') | Key::Char('V') => {
+                    self.paste();
+                    return;
+                }
                 _ => {}
             }
         }
 
+        // Shift+Delete for permanent delete
+        if modifiers.shift && *key == Key::Delete {
+            self.delete_selected_permanently();
+            return;
+        }
+
         match key {
+            Key::Delete => {
+                self.trash_selected();
+            }
+            Key::F2 => {
+                self.start_rename();
+            }
             Key::Escape => {
                 // Cancel drag first if active
                 if self.drag_active || self.drag_source_path.is_some() {
@@ -1110,6 +1146,143 @@ impl App {
         self.update_status_bar();
     }
 
+    // === File Operations ===
+
+    /// Copy selected files to clipboard.
+    fn copy_selected(&mut self) {
+        let paths = self.get_selected_paths();
+        if !paths.is_empty() {
+            self.clipboard.copy(paths);
+            self.update_status_bar();
+        }
+    }
+
+    /// Cut selected files to clipboard.
+    fn cut_selected(&mut self) {
+        let paths = self.get_selected_paths();
+        if !paths.is_empty() {
+            self.clipboard.cut(paths);
+            self.update_status_bar();
+        }
+    }
+
+    /// Paste files from clipboard to current directory.
+    fn paste(&mut self) {
+        let dest_dir = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| t.current_path().clone());
+
+        let dest_dir = match dest_dir {
+            Some(d) => d,
+            None => return,
+        };
+
+        if let Some((files, op)) = self.clipboard.take() {
+            let result = match op {
+                ClipboardOperation::Copy => copy_files(&files, &dest_dir),
+                ClipboardOperation::Cut => move_files(&files, &dest_dir),
+            };
+
+            // Show result in status bar or log errors
+            if !result.success {
+                // TODO: Show error dialog
+                eprintln!("File operation failed: {:?}", result.error);
+            }
+
+            self.refresh();
+        }
+    }
+
+    /// Move selected files to trash.
+    fn trash_selected(&mut self) {
+        let paths = self.get_selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+
+        let results = trash_files(&paths);
+        let failed: Vec<_> = results.iter()
+            .filter_map(|r| r.as_ref().err())
+            .collect();
+
+        if !failed.is_empty() {
+            // TODO: Show error dialog
+            eprintln!("Failed to trash {} files", failed.len());
+        }
+
+        self.refresh();
+    }
+
+    /// Delete selected files permanently.
+    fn delete_selected_permanently(&mut self) {
+        let paths = self.get_selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+
+        // TODO: Show confirmation dialog
+        // For now, just perform the delete
+        let result = delete_files(&paths);
+
+        if !result.success {
+            eprintln!("Delete failed: {:?}", result.error);
+        }
+
+        self.refresh();
+    }
+
+    /// Create a new folder in the current directory.
+    fn create_new_folder(&mut self) {
+        let current_dir = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| t.current_path().clone());
+
+        let current_dir = match current_dir {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Generate unique name
+        let base_name = "New Folder";
+        let mut name = base_name.to_string();
+        let mut counter = 1;
+        while current_dir.join(&name).exists() {
+            name = format!("{} ({})", base_name, counter);
+            counter += 1;
+        }
+
+        match create_directory(&current_dir, &name) {
+            Ok(_) => {
+                self.refresh();
+                // TODO: Start rename on the new folder
+            }
+            Err(e) => {
+                // TODO: Show error dialog
+                eprintln!("Failed to create folder: {}", e);
+            }
+        }
+    }
+
+    /// Start inline rename for the selected file.
+    fn start_rename(&mut self) {
+        // TODO: Implement inline rename UI
+        // For now, just log that rename was requested
+        if let Some(entry) = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .and_then(|t| t.selected_entry())
+        {
+            eprintln!("Rename requested for: {}", entry.name);
+        }
+    }
+
+    /// Get paths of all selected files.
+    fn get_selected_paths(&self) -> Vec<PathBuf> {
+        self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| t.selected_paths())
+            .unwrap_or_default()
+    }
+
     /// Set the view mode for the active tab.
     fn set_view_mode(&mut self, mode: ViewMode) {
         if let Some(pane) = self.focused_pane_mut() {
@@ -1135,6 +1308,11 @@ impl App {
             ToolbarAction::GoForward => self.go_forward(),
             ToolbarAction::GoUp => self.go_up(),
             ToolbarAction::Help => self.help_modal.toggle(),
+            ToolbarAction::Copy => self.copy_selected(),
+            ToolbarAction::Cut => self.cut_selected(),
+            ToolbarAction::Paste => self.paste(),
+            ToolbarAction::Trash => self.trash_selected(),
+            ToolbarAction::NewFolder => self.create_new_folder(),
         }
     }
 
@@ -1191,6 +1369,11 @@ impl App {
             self.status_bar.update(visible_count, selected_count, selected_size);
             self.status_bar.set_view_mode(view_mode);
             self.status_bar.update_free_space(&path);
+
+            // Update toolbar file ops state
+            let has_selection = selected_count > 0;
+            let has_clipboard = self.clipboard.has_files();
+            self.toolbar.set_file_ops_state(has_selection, has_clipboard);
         }
     }
 

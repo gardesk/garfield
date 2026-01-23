@@ -211,6 +211,15 @@ impl Tab {
         }
     }
 
+    /// Get paths of all selected entries.
+    pub fn selected_paths(&self) -> Vec<std::path::PathBuf> {
+        match self.view_mode {
+            ViewMode::List => self.list_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
+            ViewMode::Grid => self.grid_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
+            ViewMode::Columns => self.column_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
+        }
+    }
+
     /// Get the entry at the given position (for drag detection).
     pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
         match self.view_mode {

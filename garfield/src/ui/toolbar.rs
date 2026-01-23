@@ -39,6 +39,16 @@ pub enum ToolbarAction {
     GoUp,
     /// Show help modal.
     Help,
+    /// Copy selected files.
+    Copy,
+    /// Cut selected files.
+    Cut,
+    /// Paste files from clipboard.
+    Paste,
+    /// Delete selected files to trash.
+    Trash,
+    /// Create new folder.
+    NewFolder,
 }
 
 /// A toolbar button.
@@ -57,6 +67,8 @@ pub struct Toolbar {
     active_view: ToolbarAction,
     can_go_back: bool,
     can_go_forward: bool,
+    has_selection: bool,
+    has_clipboard: bool,
 }
 
 impl Toolbar {
@@ -69,6 +81,8 @@ impl Toolbar {
             active_view: ToolbarAction::ViewList,
             can_go_back: false,
             can_go_forward: false,
+            has_selection: false,
+            has_clipboard: false,
         };
         toolbar.layout_buttons();
         toolbar
@@ -89,6 +103,12 @@ impl Toolbar {
     pub fn set_nav_state(&mut self, can_back: bool, can_forward: bool) {
         self.can_go_back = can_back;
         self.can_go_forward = can_forward;
+    }
+
+    /// Set file operation state.
+    pub fn set_file_ops_state(&mut self, has_selection: bool, has_clipboard: bool) {
+        self.has_selection = has_selection;
+        self.has_clipboard = has_clipboard;
     }
 
     /// Layout buttons.
@@ -150,6 +170,26 @@ impl Toolbar {
             x += BUTTON_SIZE as i32 + BUTTON_PADDING as i32;
         }
 
+        x += GROUP_SEPARATOR as i32;
+
+        // File operation buttons
+        let file_buttons = [
+            (ToolbarAction::Copy, "Copy (Ctrl+C)"),
+            (ToolbarAction::Cut, "Cut (Ctrl+X)"),
+            (ToolbarAction::Paste, "Paste (Ctrl+V)"),
+            (ToolbarAction::Trash, "Delete (Del)"),
+            (ToolbarAction::NewFolder, "New Folder (Ctrl+Shift+N)"),
+        ];
+
+        for (action, tooltip) in file_buttons {
+            self.buttons.push(ToolbarButton {
+                action,
+                bounds: Rect::new(x, y, BUTTON_SIZE, BUTTON_SIZE),
+                tooltip,
+            });
+            x += BUTTON_SIZE as i32 + BUTTON_PADDING as i32;
+        }
+
         // Help button (right-aligned)
         let help_x = self.bounds.x + self.bounds.width as i32 - BUTTON_SIZE as i32 - BUTTON_PADDING as i32;
         self.buttons.push(ToolbarButton {
@@ -173,10 +213,13 @@ impl Toolbar {
     pub fn on_click(&self, pos: Point) -> Option<ToolbarAction> {
         for button in &self.buttons {
             if button.bounds.contains_point(pos) {
-                // Don't trigger disabled nav buttons
+                // Don't trigger disabled buttons
                 match button.action {
                     ToolbarAction::GoBack if !self.can_go_back => return None,
                     ToolbarAction::GoForward if !self.can_go_forward => return None,
+                    ToolbarAction::Copy | ToolbarAction::Cut | ToolbarAction::Trash
+                        if !self.has_selection => return None,
+                    ToolbarAction::Paste if !self.has_clipboard => return None,
                     _ => return Some(button.action),
                 }
             }
@@ -283,6 +326,8 @@ impl Toolbar {
         let is_disabled = match button.action {
             ToolbarAction::GoBack => !self.can_go_back,
             ToolbarAction::GoForward => !self.can_go_forward,
+            ToolbarAction::Copy | ToolbarAction::Cut | ToolbarAction::Trash => !self.has_selection,
+            ToolbarAction::Paste => !self.has_clipboard,
             _ => false,
         };
 
@@ -321,6 +366,11 @@ impl Toolbar {
             ToolbarAction::SplitHorizontal => self.draw_split_h_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::SplitVertical => self.draw_split_v_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::Help => self.draw_help_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::Copy => self.draw_copy_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::Cut => self.draw_cut_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::Paste => self.draw_paste_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::Trash => self.draw_trash_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::NewFolder => self.draw_new_folder_icon(renderer, cx, cy, icon_color)?,
         }
 
         Ok(())
@@ -455,6 +505,146 @@ impl Toolbar {
         renderer.line(cx + 1.0, cy - 1.0, cx, cy + 1.0, color, 1.5)?;
         // Dot at bottom
         renderer.fill_rect(Rect::new((cx - 1.0) as i32, (cy + 3.0) as i32, 3, 3), color)?;
+        Ok(())
+    }
+
+    fn draw_copy_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Two overlapping rectangles (copy symbol)
+        let w = 7.0;
+        let h = 9.0;
+        let offset = 3.0;
+
+        // Back rectangle (slightly offset)
+        let bx = cx - w/2.0 - offset/2.0;
+        let by = cy - h/2.0 - offset/2.0;
+        renderer.stroke_rect(Rect::new(bx as i32, by as i32, w as u32, h as u32), color, 1.5)?;
+
+        // Front rectangle
+        let fx = cx - w/2.0 + offset/2.0;
+        let fy = cy - h/2.0 + offset/2.0;
+        renderer.fill_rect(Rect::new(fx as i32, fy as i32, w as u32, h as u32), color.with_alpha(0.3))?;
+        renderer.stroke_rect(Rect::new(fx as i32, fy as i32, w as u32, h as u32), color, 1.5)?;
+        Ok(())
+    }
+
+    fn draw_cut_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Scissors shape - two circles with crossed lines
+        let r = 3.0;
+        let segments = 12;
+
+        // Left circle (handle)
+        let lcx = cx - 4.0;
+        let lcy = cy + 3.0;
+        for i in 0..segments {
+            let a1 = (i as f64 / segments as f64) * std::f64::consts::TAU;
+            let a2 = ((i + 1) as f64 / segments as f64) * std::f64::consts::TAU;
+            renderer.line(
+                lcx + r * a1.cos(), lcy + r * a1.sin(),
+                lcx + r * a2.cos(), lcy + r * a2.sin(),
+                color, 1.5
+            )?;
+        }
+
+        // Right circle (handle)
+        let rcx = cx + 4.0;
+        let rcy = cy + 3.0;
+        for i in 0..segments {
+            let a1 = (i as f64 / segments as f64) * std::f64::consts::TAU;
+            let a2 = ((i + 1) as f64 / segments as f64) * std::f64::consts::TAU;
+            renderer.line(
+                rcx + r * a1.cos(), rcy + r * a1.sin(),
+                rcx + r * a2.cos(), rcy + r * a2.sin(),
+                color, 1.5
+            )?;
+        }
+
+        // Blades (crossed lines going up)
+        renderer.line(lcx, lcy - r, cx + 2.0, cy - 6.0, color, 1.5)?;
+        renderer.line(rcx, rcy - r, cx - 2.0, cy - 6.0, color, 1.5)?;
+        Ok(())
+    }
+
+    fn draw_paste_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Clipboard with paper
+        let w = 10.0;
+        let h = 12.0;
+
+        // Clipboard outline
+        let bx = cx - w/2.0;
+        let by = cy - h/2.0 + 1.0;
+        renderer.stroke_rect(Rect::new(bx as i32, by as i32, w as u32, h as u32), color, 1.5)?;
+
+        // Clip at top (small rectangle)
+        let clip_w = 5.0;
+        let clip_h = 3.0;
+        let clip_x = cx - clip_w/2.0;
+        let clip_y = by - clip_h/2.0;
+        renderer.fill_rect(Rect::new(clip_x as i32, clip_y as i32, clip_w as u32, clip_h as u32), color)?;
+
+        // Lines on clipboard (document content)
+        let line_y1 = by + 4.0;
+        let line_y2 = by + 7.0;
+        renderer.line(bx + 2.0, line_y1, bx + w - 2.0, line_y1, color, 1.5)?;
+        renderer.line(bx + 2.0, line_y2, bx + w - 2.0, line_y2, color, 1.5)?;
+        Ok(())
+    }
+
+    fn draw_trash_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Trash can shape
+        let w = 10.0;
+        let h = 10.0;
+
+        // Body (trapezoid-ish)
+        let bx = cx - w/2.0;
+        let by = cy - h/2.0 + 2.0;
+        let bw = w;
+        let bh = h - 2.0;
+        renderer.line(bx, by, bx + 1.0, by + bh, color, 1.5)?;
+        renderer.line(bx + 1.0, by + bh, bx + bw - 1.0, by + bh, color, 1.5)?;
+        renderer.line(bx + bw - 1.0, by + bh, bx + bw, by, color, 1.5)?;
+
+        // Lid
+        let lid_y = cy - h/2.0;
+        renderer.line(cx - w/2.0 - 1.0, lid_y, cx + w/2.0 + 1.0, lid_y, color, 2.0)?;
+
+        // Handle on lid
+        renderer.line(cx - 2.0, lid_y, cx - 2.0, lid_y - 2.0, color, 1.5)?;
+        renderer.line(cx - 2.0, lid_y - 2.0, cx + 2.0, lid_y - 2.0, color, 1.5)?;
+        renderer.line(cx + 2.0, lid_y - 2.0, cx + 2.0, lid_y, color, 1.5)?;
+
+        // Vertical lines inside
+        renderer.line(cx - 2.0, by + 2.0, cx - 2.0, by + bh - 2.0, color, 1.0)?;
+        renderer.line(cx, by + 2.0, cx, by + bh - 2.0, color, 1.0)?;
+        renderer.line(cx + 2.0, by + 2.0, cx + 2.0, by + bh - 2.0, color, 1.0)?;
+        Ok(())
+    }
+
+    fn draw_new_folder_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Folder shape with plus sign
+        let w = 12.0;
+        let h = 9.0;
+        let tab_w = 5.0;
+        let tab_h = 2.0;
+
+        let fx = cx - w/2.0;
+        let fy = cy - h/2.0;
+
+        // Folder tab
+        renderer.line(fx, fy + tab_h, fx, fy, color, 1.5)?;
+        renderer.line(fx, fy, fx + tab_w, fy, color, 1.5)?;
+        renderer.line(fx + tab_w, fy, fx + tab_w + 2.0, fy + tab_h, color, 1.5)?;
+
+        // Folder body
+        renderer.line(fx + tab_w + 2.0, fy + tab_h, fx + w, fy + tab_h, color, 1.5)?;
+        renderer.line(fx + w, fy + tab_h, fx + w, fy + h, color, 1.5)?;
+        renderer.line(fx + w, fy + h, fx, fy + h, color, 1.5)?;
+        renderer.line(fx, fy + h, fx, fy + tab_h, color, 1.5)?;
+
+        // Plus sign in center
+        let plus_size = 4.0;
+        let pcy = cy + 1.0;
+        renderer.line(cx - plus_size/2.0, pcy, cx + plus_size/2.0, pcy, color, 1.5)?;
+        renderer.line(cx, pcy - plus_size/2.0, cx, pcy + plus_size/2.0, color, 1.5)?;
         Ok(())
     }
 }

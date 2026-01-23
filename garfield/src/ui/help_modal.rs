@@ -53,6 +53,15 @@ const KEYBINDS: &[(&str, &[KeybindEntry])] = &[
         KeybindEntry { key: "Ctrl+Click", description: "Toggle selection" },
         KeybindEntry { key: "Shift+Click", description: "Range select" },
     ]),
+    ("File Operations", &[
+        KeybindEntry { key: "Ctrl+C", description: "Copy" },
+        KeybindEntry { key: "Ctrl+X", description: "Cut" },
+        KeybindEntry { key: "Ctrl+V", description: "Paste" },
+        KeybindEntry { key: "Delete", description: "Move to trash" },
+        KeybindEntry { key: "Shift+Delete", description: "Delete permanently" },
+        KeybindEntry { key: "F2", description: "Rename" },
+        KeybindEntry { key: "Ctrl+Shift+N", description: "New folder" },
+    ]),
     ("Other", &[
         KeybindEntry { key: "Ctrl+L", description: "Edit address" },
         KeybindEntry { key: "F5", description: "Refresh" },
