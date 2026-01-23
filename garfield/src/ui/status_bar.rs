@@ -22,6 +22,8 @@ pub struct StatusBar {
     view_mode: String,
     /// Free disk space in bytes.
     free_space: Option<u64>,
+    /// Status message for operations (e.g., "3 files copied").
+    status_message: Option<String>,
 }
 
 impl StatusBar {
@@ -34,6 +36,7 @@ impl StatusBar {
             selected_size: 0,
             view_mode: "List".to_string(),
             free_space: None,
+            status_message: None,
         }
     }
 
@@ -57,6 +60,16 @@ impl StatusBar {
     /// Update free disk space for the given path.
     pub fn update_free_space(&mut self, path: &Path) {
         self.free_space = get_free_space(path);
+    }
+
+    /// Set a status message to display (replaces left side text temporarily).
+    pub fn set_status_message(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
+    }
+
+    /// Clear the status message.
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
     }
 
     /// Get status bar height.
@@ -89,8 +102,10 @@ impl StatusBar {
         let padding = 12;
         let text_y = self.bounds.y + (self.bounds.height as i32 - theme.font_size as i32) / 2;
 
-        // Left side: item count and selection
-        let left_text = if self.selected_count > 1 {
+        // Left side: status message (if any) or item count and selection
+        let left_text = if let Some(ref msg) = self.status_message {
+            msg.clone()
+        } else if self.selected_count > 1 {
             format!(
                 "{} items ({} selected, {})",
                 self.total_items,
@@ -107,11 +122,18 @@ impl StatusBar {
             format!("{} items", self.total_items)
         };
 
+        // Use highlight color for status messages
+        let left_style = if self.status_message.is_some() {
+            text_style.clone().color(theme.selection_background)
+        } else {
+            text_style.clone()
+        };
+
         renderer.text(
             &left_text,
             (self.bounds.x + padding) as f64,
             text_y as f64,
-            &text_style,
+            &left_style,
         )?;
 
         // Right side: free space and view mode

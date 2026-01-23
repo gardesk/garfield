@@ -1080,6 +1080,7 @@ impl App {
 
     /// Enter the selected entry.
     fn enter_selected(&mut self) {
+        self.status_bar.clear_status_message();
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.enter_selected();
@@ -1091,6 +1092,7 @@ impl App {
 
     /// Navigate to a directory.
     fn navigate_to(&mut self, path: PathBuf) {
+        self.status_bar.clear_status_message();
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.navigate_to(path);
@@ -1103,6 +1105,7 @@ impl App {
 
     /// Go back in history.
     fn go_back(&mut self) {
+        self.status_bar.clear_status_message();
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.go_back();
@@ -1115,6 +1118,7 @@ impl App {
 
     /// Go forward in history.
     fn go_forward(&mut self) {
+        self.status_bar.clear_status_message();
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.go_forward();
@@ -1127,6 +1131,7 @@ impl App {
 
     /// Go up to parent directory.
     fn go_up(&mut self) {
+        self.status_bar.clear_status_message();
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.go_up();
@@ -1152,7 +1157,10 @@ impl App {
     fn copy_selected(&mut self) {
         let paths = self.get_selected_paths();
         if !paths.is_empty() {
+            let count = paths.len();
             self.clipboard.copy(paths);
+            let msg = if count == 1 { "1 item copied".to_string() } else { format!("{} items copied", count) };
+            self.status_bar.set_status_message(msg);
             self.update_status_bar();
         }
     }
@@ -1161,7 +1169,10 @@ impl App {
     fn cut_selected(&mut self) {
         let paths = self.get_selected_paths();
         if !paths.is_empty() {
+            let count = paths.len();
             self.clipboard.cut(paths);
+            let msg = if count == 1 { "1 item cut".to_string() } else { format!("{} items cut", count) };
+            self.status_bar.set_status_message(msg);
             self.update_status_bar();
         }
     }
@@ -1178,15 +1189,20 @@ impl App {
         };
 
         if let Some((files, op)) = self.clipboard.take() {
+            let count = files.len();
             let result = match op {
                 ClipboardOperation::Copy => copy_files(&files, &dest_dir),
                 ClipboardOperation::Cut => move_files(&files, &dest_dir),
             };
 
-            // Show result in status bar or log errors
-            if !result.success {
-                // TODO: Show error dialog
-                eprintln!("File operation failed: {:?}", result.error);
+            // Show result in status bar
+            if result.success {
+                let action = if op == ClipboardOperation::Copy { "copied" } else { "moved" };
+                let msg = if count == 1 { format!("1 item {}", action) } else { format!("{} items {}", count, action) };
+                self.status_bar.set_status_message(msg);
+            } else {
+                let msg = format!("Operation failed: {}", result.error.as_deref().unwrap_or("unknown error"));
+                self.status_bar.set_status_message(msg);
             }
 
             self.refresh();
@@ -1200,14 +1216,17 @@ impl App {
             return;
         }
 
+        let count = paths.len();
         let results = trash_files(&paths);
-        let failed: Vec<_> = results.iter()
-            .filter_map(|r| r.as_ref().err())
-            .collect();
+        let success_count = results.iter().filter(|r| r.is_ok()).count();
+        let failed_count = results.iter().filter(|r| r.is_err()).count();
 
-        if !failed.is_empty() {
-            // TODO: Show error dialog
-            eprintln!("Failed to trash {} files", failed.len());
+        if failed_count > 0 {
+            let msg = format!("Moved {} to trash, {} failed", success_count, failed_count);
+            self.status_bar.set_status_message(msg);
+        } else {
+            let msg = if count == 1 { "1 item moved to trash".to_string() } else { format!("{} items moved to trash", count) };
+            self.status_bar.set_status_message(msg);
         }
 
         self.refresh();
@@ -1220,12 +1239,16 @@ impl App {
             return;
         }
 
+        let count = paths.len();
         // TODO: Show confirmation dialog
-        // For now, just perform the delete
         let result = delete_files(&paths);
 
-        if !result.success {
-            eprintln!("Delete failed: {:?}", result.error);
+        if result.success {
+            let msg = if count == 1 { "1 item deleted".to_string() } else { format!("{} items deleted", count) };
+            self.status_bar.set_status_message(msg);
+        } else {
+            let msg = format!("Delete failed: {}", result.error.as_deref().unwrap_or("unknown error"));
+            self.status_bar.set_status_message(msg);
         }
 
         self.refresh();
@@ -1253,12 +1276,12 @@ impl App {
 
         match create_directory(&current_dir, &name) {
             Ok(_) => {
+                self.status_bar.set_status_message(format!("Created '{}'", name));
                 self.refresh();
                 // TODO: Start rename on the new folder
             }
             Err(e) => {
-                // TODO: Show error dialog
-                eprintln!("Failed to create folder: {}", e);
+                self.status_bar.set_status_message(format!("Failed to create folder: {}", e));
             }
         }
     }
