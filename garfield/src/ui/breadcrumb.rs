@@ -45,21 +45,19 @@ impl Breadcrumb {
 
         let mut accumulated = PathBuf::new();
 
-        // Add root segment
-        if path.has_root() {
-            accumulated.push("/");
-            self.segments.push(Segment {
-                text: "/".to_string(),
-                path: accumulated.clone(),
-                bounds: Rect::new(0, 0, 0, 0), // Will be calculated on render
-            });
-        }
-
         // Add each path component
         for component in path.components() {
             use std::path::Component;
             match component {
-                Component::RootDir => {} // Already handled
+                Component::RootDir => {
+                    accumulated.push("/");
+                    // Root is shown as "/" - no separator before it
+                    self.segments.push(Segment {
+                        text: "/".to_string(),
+                        path: accumulated.clone(),
+                        bounds: Rect::new(0, 0, 0, 0),
+                    });
+                }
                 Component::Normal(name) => {
                     accumulated.push(name);
                     self.segments.push(Segment {
@@ -171,12 +169,21 @@ impl Breadcrumb {
         let mut x = self.bounds.x + 8 + button_width * 2 + 8;
         let text_y = self.bounds.y + (self.bounds.height as i32 - theme.font_size as i32) / 2;
 
+        // Check if first segment is root "/" for separator logic
+        let first_is_root = self.segments.first().map(|s| s.text == "/").unwrap_or(false);
+
         // Measure and render segments
         for (i, segment) in self.segments.iter_mut().enumerate() {
-            // Add separator before non-root segments
+            // Add separator before non-root segments (but not after root "/")
             if i > 0 {
-                let sep_size = renderer.measure_text(&self.separator, &separator_style)?;
-                renderer.text(&self.separator, x as f64, text_y as f64, &separator_style)?;
+                // If previous segment was root "/", just add space, not " / "
+                let sep = if i == 1 && first_is_root {
+                    " "
+                } else {
+                    &self.separator
+                };
+                let sep_size = renderer.measure_text(sep, &separator_style)?;
+                renderer.text(sep, x as f64, text_y as f64, &separator_style)?;
                 x += sep_size.width as i32;
             }
 
