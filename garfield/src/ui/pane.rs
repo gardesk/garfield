@@ -693,4 +693,67 @@ impl Pane {
 
         best_id
     }
+
+    /// Get the first leaf ID in this pane tree.
+    pub fn first_leaf_id(&self) -> Option<u32> {
+        match self {
+            Pane::Leaf { id, .. } => Some(*id),
+            Pane::Split { first, .. } => first.first_leaf_id(),
+        }
+    }
+
+    /// Remove a pane by ID. Returns the ID of a sibling pane to focus on.
+    /// Returns None if the pane is the root leaf (can't close the last pane).
+    pub fn remove_pane(&mut self, target_id: u32) -> Option<u32> {
+        match self {
+            Pane::Leaf { id, .. } => {
+                // Can't remove the root leaf - it's the only pane
+                if *id == target_id {
+                    None
+                } else {
+                    None // Target not found
+                }
+            }
+            Pane::Split { first, second, bounds, .. } => {
+                // Check if first child is the target leaf
+                if let Some(first_id) = first.id() {
+                    if first_id == target_id {
+                        // Replace self with second child
+                        let sibling_id = second.first_leaf_id();
+                        let current_bounds = *bounds;
+                        let replacement = std::mem::replace(
+                            second.as_mut(),
+                            Pane::new_leaf(PathBuf::new(), Rect::new(0, 0, 0, 0), 0),
+                        );
+                        *self = replacement;
+                        self.set_bounds(current_bounds);
+                        return sibling_id;
+                    }
+                }
+
+                // Check if second child is the target leaf
+                if let Some(second_id) = second.id() {
+                    if second_id == target_id {
+                        // Replace self with first child
+                        let sibling_id = first.first_leaf_id();
+                        let current_bounds = *bounds;
+                        let replacement = std::mem::replace(
+                            first.as_mut(),
+                            Pane::new_leaf(PathBuf::new(), Rect::new(0, 0, 0, 0), 0),
+                        );
+                        *self = replacement;
+                        self.set_bounds(current_bounds);
+                        return sibling_id;
+                    }
+                }
+
+                // Recurse into children
+                if first.leaf_by_id(target_id).is_some() {
+                    first.remove_pane(target_id)
+                } else {
+                    second.remove_pane(target_id)
+                }
+            }
+        }
+    }
 }
