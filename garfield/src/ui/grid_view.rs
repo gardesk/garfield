@@ -485,7 +485,13 @@ impl GridView {
                 cell.width - 8,
                 cell.height - ICON_SIZE - 12,
             );
-            renderer.text_in_rect(&entry.name, text_rect, &name_style)?;
+            // Add "@" suffix for symlinks
+            let display_name = if entry.is_symlink {
+                format!("{}@", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            renderer.text_in_rect(&display_name, text_rect, &name_style)?;
         }
 
         // Draw rubber band selection rectangle

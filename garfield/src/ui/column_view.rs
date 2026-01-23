@@ -636,9 +636,10 @@ impl ColumnView {
                 .font_size(theme.font_size - 1.0)
                 .color(text_color);
 
-            // Directory indicator
-            let prefix = if entry.is_dir() { "> " } else { "  " };
-            let display_text = format!("{}{}", prefix, entry.name);
+            // Directory/symlink indicator
+            let prefix = if entry.is_navigable() { "> " } else { "  " };
+            let suffix = if entry.is_symlink { " @" } else { "" };
+            let display_text = format!("{}{}{}", prefix, entry.name, suffix);
 
             let text_rect = Rect::new(row.x + 4, row.y, row.width - 8, ROW_HEIGHT);
             renderer.text_in_rect(&display_text, text_rect, &text_style)?;

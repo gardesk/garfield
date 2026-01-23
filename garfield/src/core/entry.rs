@@ -109,6 +109,19 @@ impl FileEntry {
         self.entry_type == EntryType::File
     }
 
+    /// Check if this entry can be navigated into (directory or symlink to directory).
+    pub fn is_navigable(&self) -> bool {
+        if self.entry_type == EntryType::Directory {
+            return true;
+        }
+        if self.is_symlink {
+            // Check if symlink points to a directory
+            self.path.is_dir()
+        } else {
+            false
+        }
+    }
+
     /// Get file extension (lowercase).
     pub fn extension(&self) -> Option<String> {
         self.path

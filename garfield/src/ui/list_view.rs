@@ -560,7 +560,22 @@ impl ListView {
                 EntryType::Symlink => "\u{1F517} ",
                 _ => "\u{1F4C4} ",
             };
-            let display_name = format!("{}{}", icon, entry.name);
+            let display_name = if entry.is_symlink {
+                if let Some(target) = &entry.symlink_target {
+                    let target_str = target.to_string_lossy();
+                    // Truncate long targets
+                    let target_display = if target_str.len() > 30 {
+                        format!("...{}", &target_str[target_str.len()-27..])
+                    } else {
+                        target_str.to_string()
+                    };
+                    format!("{}{} -> {}", icon, entry.name, target_display)
+                } else {
+                    format!("{}{}", icon, entry.name)
+                }
+            } else {
+                format!("{}{}", icon, entry.name)
+            };
 
             let name_rect =
                 Rect::new(row_rect.x + 8, row_rect.y, self.column_widths[0], ROW_HEIGHT);
