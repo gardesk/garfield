@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, DialogResult, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -74,6 +74,10 @@ pub struct App {
     drag_active: bool,
     /// Clipboard for file operations.
     clipboard: Clipboard,
+    /// Confirmation dialog.
+    confirm_dialog: ConfirmDialog,
+    /// Paths pending delete confirmation.
+    pending_delete_paths: Vec<PathBuf>,
 }
 
 impl App {
@@ -163,6 +167,9 @@ impl App {
         // Create help modal (full window bounds)
         let help_modal = HelpModal::new(Rect::new(0, 0, width, height));
 
+        // Create confirm dialog (full window bounds)
+        let confirm_dialog = ConfirmDialog::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -208,6 +215,8 @@ impl App {
             drag_current_pos: None,
             drag_active: false,
             clipboard: Clipboard::new(),
+            confirm_dialog,
+            pending_delete_paths: Vec::new(),
         };
 
         app.update_status_bar();
@@ -292,7 +301,15 @@ impl App {
 
     /// Handle mouse press.
     fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers, button: Option<MouseButton>) {
-        // Check help modal first (clicking outside closes it)
+        // Check confirm dialog first
+        if self.confirm_dialog.is_visible() {
+            if let Some(result) = self.confirm_dialog.on_click(pos) {
+                self.handle_dialog_result(result);
+            }
+            return;
+        }
+
+        // Check help modal (clicking outside closes it)
         if self.help_modal.on_click(pos) {
             return;
         }
@@ -513,6 +530,12 @@ impl App {
 
     /// Handle mouse move.
     fn handle_mouse_move(&mut self, pos: Point) {
+        // Handle confirm dialog hover
+        if self.confirm_dialog.is_visible() {
+            self.confirm_dialog.on_mouse_move(pos);
+            return;
+        }
+
         // Handle sidebar resize in progress
         if self.sidebar_resizing {
             let new_width = (pos.x - self.sidebar.bounds().x).max(0) as u32;
@@ -583,6 +606,14 @@ impl App {
 
     /// Handle a key press.
     fn handle_key(&mut self, key: &Key, modifiers: &gartk_core::Modifiers) {
+        // Handle confirm dialog when visible
+        if self.confirm_dialog.is_visible() {
+            if let Some(result) = self.confirm_dialog.handle_key(key) {
+                self.handle_dialog_result(result);
+            }
+            return;
+        }
+
         // Handle help modal when visible
         if self.help_modal.is_visible() {
             match key {
@@ -1257,26 +1288,44 @@ impl App {
         self.refresh();
     }
 
-    /// Delete selected files permanently.
+    /// Delete selected files permanently (shows confirmation dialog).
     fn delete_selected_permanently(&mut self) {
         let paths = self.get_selected_paths();
         if paths.is_empty() {
             return;
         }
 
-        let count = paths.len();
-        // TODO: Show confirmation dialog
-        let result = delete_files(&paths);
+        // Store paths and show confirmation dialog
+        self.pending_delete_paths = paths.clone();
+        self.confirm_dialog.show_delete_confirm(paths.len());
+    }
 
-        if result.success {
-            let msg = if count == 1 { "1 item deleted".to_string() } else { format!("{} items deleted", count) };
-            self.status_bar.set_status_message(msg);
-        } else {
-            let msg = format!("Delete failed: {}", result.error.as_deref().unwrap_or("unknown error"));
-            self.status_bar.set_status_message(msg);
+    /// Handle confirmation dialog result.
+    fn handle_dialog_result(&mut self, result: DialogResult) {
+        match result {
+            DialogResult::Confirmed => {
+                // Perform the pending delete
+                if !self.pending_delete_paths.is_empty() {
+                    let paths = std::mem::take(&mut self.pending_delete_paths);
+                    let count = paths.len();
+                    let result = delete_files(&paths);
+
+                    if result.success {
+                        let msg = if count == 1 { "1 item deleted".to_string() } else { format!("{} items deleted", count) };
+                        self.status_bar.set_status_message(msg);
+                    } else {
+                        let msg = format!("Delete failed: {}", result.error.as_deref().unwrap_or("unknown error"));
+                        self.status_bar.set_status_message(msg);
+                    }
+
+                    self.refresh();
+                }
+            }
+            DialogResult::Cancelled => {
+                // Clear pending paths
+                self.pending_delete_paths.clear();
+            }
         }
-
-        self.refresh();
     }
 
     /// Create a new folder in the current directory.
@@ -1507,6 +1556,7 @@ impl App {
         ));
 
         self.help_modal.set_bounds(Rect::new(0, 0, width, height));
+        self.confirm_dialog.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -1569,6 +1619,9 @@ impl App {
 
         // Draw help modal overlay (on top of everything)
         self.help_modal.render(&self.renderer)?;
+
+        // Draw confirm dialog overlay (on top of everything)
+        self.confirm_dialog.render(&self.renderer)?;
 
         // Flush and copy to window
         self.renderer.flush();

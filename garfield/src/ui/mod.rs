@@ -3,6 +3,7 @@
 pub mod address_bar;
 pub mod breadcrumb;
 pub mod column_view;
+pub mod dialog;
 pub mod grid_view;
 pub mod help_modal;
 pub mod list_view;
@@ -14,6 +15,7 @@ pub mod tab_bar;
 pub mod toolbar;
 
 pub use address_bar::AddressBar;
+pub use dialog::{ConfirmDialog, DialogResult};
 pub use breadcrumb::Breadcrumb;
 pub use column_view::{ColumnClickResult, ColumnView};
 pub use grid_view::GridView;
