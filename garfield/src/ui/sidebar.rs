@@ -173,6 +173,59 @@ impl Sidebar {
                 });
             }
         }
+
+        // Mounted volumes
+        self.add_mounted_volumes();
+    }
+
+    /// Add mounted volumes from common mount points.
+    fn add_mounted_volumes(&mut self) {
+        let mount_points = [
+            PathBuf::from("/media"),
+            PathBuf::from("/mnt"),
+        ];
+
+        // Also check /run/media/$USER for modern systems
+        if let Ok(username) = std::env::var("USER") {
+            let user_media = PathBuf::from(format!("/run/media/{}", username));
+            if user_media.exists() {
+                self.scan_mount_point(&user_media);
+            }
+        }
+
+        for mount_point in &mount_points {
+            if mount_point.exists() {
+                self.scan_mount_point(mount_point);
+            }
+        }
+    }
+
+    /// Scan a mount point directory for mounted volumes.
+    fn scan_mount_point(&mut self, mount_point: &Path) {
+        if let Ok(entries) = fs::read_dir(mount_point) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Volume".to_string());
+
+                    // Skip if already in places (avoid duplicates)
+                    if self.places.iter().any(|p| p.path == path) {
+                        continue;
+                    }
+
+                    self.places.push(Place {
+                        name,
+                        icon: "#".to_string(), // Volume/drive icon
+                        path,
+                        bounds: Rect::new(0, 0, 0, 0),
+                        is_bookmark: false,
+                    });
+                }
+            }
+        }
     }
 
     /// Load bookmarks from config file.
