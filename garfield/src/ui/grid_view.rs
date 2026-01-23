@@ -434,9 +434,10 @@ impl GridView {
                 .font_size(32.0)
                 .color(icon_color);
 
-            let icon_x = cell.x + (cell.width as i32 - 32) / 2;
-            let icon_y = cell.y + 10;
-            renderer.text(icon, icon_x as f64, icon_y as f64, &icon_style)?;
+            // Center icon horizontally in cell
+            let icon_center_x = cell.x + cell.width as i32 / 2;
+            let icon_center_y = cell.y + 10 + 16; // 10px top padding + half icon height
+            renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
 
             // File name (truncated)
             let name_color = if is_selected {
