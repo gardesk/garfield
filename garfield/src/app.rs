@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, HelpModal, Pane, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface};
@@ -44,6 +44,8 @@ pub struct App {
     next_pane_id: u32,
     /// Status bar component.
     status_bar: StatusBar,
+    /// Help modal overlay.
+    help_modal: HelpModal,
     /// Whether the app should quit.
     should_quit: bool,
     /// Pane divider resize in progress (split pane pointer path).
@@ -134,6 +136,9 @@ impl App {
         let mut status_bar = StatusBar::new(status_bar_bounds);
         status_bar.set_view_mode("List");
 
+        // Create help modal (full window bounds)
+        let help_modal = HelpModal::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -167,6 +172,7 @@ impl App {
             focused_pane_id,
             next_pane_id,
             status_bar,
+            help_modal,
             should_quit: false,
             pane_resize_path: None,
         };
@@ -252,6 +258,11 @@ impl App {
 
     /// Handle mouse press.
     fn handle_mouse_press(&mut self, pos: Point, modifiers: &gartk_core::Modifiers) {
+        // Check help modal first (clicking outside closes it)
+        if self.help_modal.on_click(pos) {
+            return;
+        }
+
         // Check tab bar clicks
         if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
             if is_close {
@@ -373,6 +384,23 @@ impl App {
 
     /// Handle a key press.
     fn handle_key(&mut self, key: &Key, modifiers: &gartk_core::Modifiers) {
+        // Handle help modal when visible
+        if self.help_modal.is_visible() {
+            match key {
+                Key::Escape | Key::F1 => self.help_modal.hide(),
+                Key::Up | Key::Char('k') => self.help_modal.scroll_up(),
+                Key::Down | Key::Char('j') => self.help_modal.scroll_down(),
+                _ => {}
+            }
+            return;
+        }
+
+        // F1 toggles help
+        if *key == Key::F1 {
+            self.help_modal.show();
+            return;
+        }
+
         // Handle address bar input first
         if self.address_bar.is_active() {
             if *key == Key::Return {
@@ -724,8 +752,19 @@ impl App {
 
     /// Close the focused pane.
     fn close_pane(&mut self) {
-        // TODO: Implement proper pane removal
-        // For now, this is a no-op as it requires tree manipulation
+        // Can't close if only one pane
+        if self.root_pane.leaf_ids().len() <= 1 {
+            return;
+        }
+
+        // Remove the focused pane and get sibling to focus
+        if let Some(new_focus_id) = self.root_pane.remove_pane(self.focused_pane_id) {
+            self.focused_pane_id = new_focus_id;
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.sync_toolbar_view();
+            self.update_status_bar();
+        }
     }
 
     /// Focus the pane to the left.
@@ -862,6 +901,7 @@ impl App {
             ToolbarAction::GoBack => self.go_back(),
             ToolbarAction::GoForward => self.go_forward(),
             ToolbarAction::GoUp => self.go_up(),
+            ToolbarAction::Help => self.help_modal.toggle(),
         }
     }
 
@@ -964,6 +1004,8 @@ impl App {
             width - sidebar_w,
             STATUS_BAR_HEIGHT,
         ));
+
+        self.help_modal.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -1017,6 +1059,9 @@ impl App {
 
         // Draw status bar
         self.status_bar.render(&self.renderer)?;
+
+        // Draw help modal overlay (on top of everything)
+        self.help_modal.render(&self.renderer)?;
 
         // Flush and copy to window
         self.renderer.flush();
