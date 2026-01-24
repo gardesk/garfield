@@ -171,7 +171,8 @@ impl ConfirmDialog {
         // Calculate width based on message length, with min/max constraints
         let base_width = 450;
         let dialog_width = base_width.min(self.bounds.width.saturating_sub(40));
-        let dialog_height = 200.min(self.bounds.height.saturating_sub(40));
+        // Need enough height for: title (30) + message (~60) + gap (20) + buttons (32) + padding (40)
+        let dialog_height = 220.min(self.bounds.height.saturating_sub(20));
         let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
         let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
         Rect::new(x, y, dialog_width, dialog_height)
@@ -215,7 +216,8 @@ impl ConfirmDialog {
         let dialog = self.dialog_rect();
         let button_width = 100;
         let button_height = 32;
-        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 16;
+        // Position buttons 20px from bottom for more breathing room
+        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 20;
         let button_gap = 16;
         let total_width = button_width * 2 + button_gap;
         let start_x = dialog.x + (dialog.width as i32 - total_width as i32) / 2;
