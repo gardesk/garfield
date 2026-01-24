@@ -13,13 +13,19 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Maximum number of visible items in the list.
-const MAX_VISIBLE_ITEMS: usize = 10;
+const MAX_VISIBLE_ITEMS: usize = 8;
 
-/// Item height in pixels.
-const ITEM_HEIGHT: u32 = 36;
+/// Item height in pixels (name + description + padding).
+const ITEM_HEIGHT: u32 = 48;
 
 /// Input field height.
-const INPUT_HEIGHT: u32 = 40;
+const INPUT_HEIGHT: u32 = 36;
+
+/// Title area height.
+const TITLE_HEIGHT: u32 = 32;
+
+/// Gap between sections.
+const SECTION_GAP: u32 = 12;
 
 /// Padding inside dialog.
 const DIALOG_PADDING: u32 = 16;
@@ -431,7 +437,7 @@ impl AppPickerDialog {
         }
 
         // Check if click is in item list area
-        let list_y_start = dialog_rect.y + DIALOG_PADDING as i32 + INPUT_HEIGHT as i32 + 8;
+        let list_y_start = self.list_y_start();
         let list_y_end = list_y_start + (MAX_VISIBLE_ITEMS as i32 * ITEM_HEIGHT as i32);
 
         if pos.y >= list_y_start && pos.y < list_y_end {
@@ -466,7 +472,7 @@ impl AppPickerDialog {
         }
 
         let dialog_rect = self.dialog_rect();
-        let list_y_start = dialog_rect.y + DIALOG_PADDING as i32 + INPUT_HEIGHT as i32 + 8;
+        let list_y_start = self.list_y_start();
         let list_y_end = list_y_start + (MAX_VISIBLE_ITEMS as i32 * ITEM_HEIGHT as i32);
 
         if pos.y >= list_y_start && pos.y < list_y_end
@@ -488,8 +494,10 @@ impl AppPickerDialog {
 
     /// Get the dialog rectangle (centered).
     fn dialog_rect(&self) -> Rect {
-        let dialog_width = 500.min(self.bounds.width.saturating_sub(40));
-        let dialog_height = (DIALOG_PADDING * 2 + INPUT_HEIGHT + 8 + (MAX_VISIBLE_ITEMS as u32 * ITEM_HEIGHT) + 24)
+        let dialog_width = 520.min(self.bounds.width.saturating_sub(40));
+        // Title + gap + input + gap + items + gap + count
+        let dialog_height = (DIALOG_PADDING * 2 + TITLE_HEIGHT + SECTION_GAP + INPUT_HEIGHT + SECTION_GAP
+            + (MAX_VISIBLE_ITEMS as u32 * ITEM_HEIGHT) + SECTION_GAP + 20)
             .min(self.bounds.height.saturating_sub(40));
 
         let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
@@ -501,12 +509,20 @@ impl AppPickerDialog {
     /// Get the input field rectangle.
     fn input_rect(&self) -> Rect {
         let dialog = self.dialog_rect();
+        // Position after title + gap
+        let y = dialog.y + DIALOG_PADDING as i32 + TITLE_HEIGHT as i32 + SECTION_GAP as i32;
         Rect::new(
             dialog.x + DIALOG_PADDING as i32,
-            dialog.y + DIALOG_PADDING as i32,
+            y,
             dialog.width - DIALOG_PADDING * 2,
             INPUT_HEIGHT,
         )
+    }
+
+    /// Get the Y position where the item list starts.
+    fn list_y_start(&self) -> i32 {
+        let input_rect = self.input_rect();
+        input_rect.y + INPUT_HEIGHT as i32 + SECTION_GAP as i32
     }
 
     /// Render the dialog.
@@ -528,13 +544,13 @@ impl AppPickerDialog {
         // Title
         let title_style = TextStyle::new()
             .font_family(&theme.font_family)
-            .font_size(theme.font_size + 2.0)
+            .font_size(theme.font_size + 4.0)
             .color(theme.foreground);
 
         renderer.text(
             "Open With Application",
             (dialog_rect.x + DIALOG_PADDING as i32) as f64,
-            (dialog_rect.y + 8) as f64,
+            (dialog_rect.y + DIALOG_PADDING as i32) as f64,
             &title_style,
         )?;
 
@@ -590,17 +606,17 @@ impl AppPickerDialog {
         )?;
 
         // Item list
-        let list_y_start = dialog_rect.y + DIALOG_PADDING as i32 + INPUT_HEIGHT as i32 + 8;
+        let list_y_start = self.list_y_start();
         let list_width = dialog_rect.width - DIALOG_PADDING * 2;
 
         let name_style = TextStyle::new()
             .font_family(&theme.font_family)
-            .font_size(theme.font_size)
+            .font_size(theme.font_size + 1.0)
             .color(theme.foreground);
 
         let desc_style = TextStyle::new()
             .font_family(&theme.font_family)
-            .font_size(theme.font_size - 2.0)
+            .font_size(theme.font_size - 1.0)
             .color(theme.item_description);
 
         let visible_end = (self.scroll_offset + MAX_VISIBLE_ITEMS).min(self.filtered_apps.len());
@@ -627,28 +643,30 @@ impl AppPickerDialog {
                 renderer.fill_rounded_rect(item_rect, 4.0, theme.item_hover_background)?;
             }
 
-            // App name
+            // App name (positioned near top of item)
+            let name_y = item_y + 10;
             renderer.text(
                 &app.name,
                 (item_rect.x + 12) as f64,
-                (item_y + 6) as f64,
+                name_y as f64,
                 &name_style,
             )?;
 
-            // App description (if any)
+            // App description (if any, positioned below name with gap)
             if let Some(desc) = &app.description {
                 // Truncate long descriptions
-                let max_desc_len = 60;
+                let max_desc_len = 70;
                 let truncated = if desc.len() > max_desc_len {
                     format!("{}...", &desc[..max_desc_len])
                 } else {
                     desc.clone()
                 };
 
+                let desc_y = name_y + (theme.font_size as i32) + 6;
                 renderer.text(
                     &truncated,
                     (item_rect.x + 12) as f64,
-                    (item_y + 6 + theme.font_size as i32) as f64,
+                    desc_y as f64,
                     &desc_style,
                 )?;
             }
