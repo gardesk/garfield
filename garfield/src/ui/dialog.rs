@@ -169,10 +169,10 @@ impl ConfirmDialog {
     /// Get the dialog rectangle (centered in bounds).
     fn dialog_rect(&self) -> Rect {
         // Calculate width based on message length, with min/max constraints
-        let base_width = 450;
-        let dialog_width = base_width.min(self.bounds.width.saturating_sub(40));
-        // Need enough height for: title (30) + message (~60) + gap (20) + buttons (32) + padding (40)
-        let dialog_height = 220.min(self.bounds.height.saturating_sub(20));
+        let base_width = 480;
+        let dialog_width = base_width.min(self.bounds.width.saturating_sub(20));
+        // Need enough height for: title (40) + message (~80) + gap (20) + buttons (32) + padding (48)
+        let dialog_height = 240.min(self.bounds.height.saturating_sub(20));
         let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
         let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
         Rect::new(x, y, dialog_width, dialog_height)
@@ -215,9 +215,9 @@ impl ConfirmDialog {
     fn button_rects(&self) -> (Rect, Rect) {
         let dialog = self.dialog_rect();
         let button_width = 100;
-        let button_height = 32;
-        // Position buttons 20px from bottom for more breathing room
-        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 20;
+        let button_height = 36;
+        // Position buttons 24px from bottom for more breathing room
+        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 24;
         let button_gap = 16;
         let total_width = button_width * 2 + button_gap;
         let start_x = dialog.x + (dialog.width as i32 - total_width as i32) / 2;
@@ -264,10 +264,10 @@ impl ConfirmDialog {
             .font_size(theme.font_size)
             .color(theme.item_foreground);
 
-        // Wrap and render message lines
-        let max_chars = ((dialog_rect.width - 40) as f64 / (theme.font_size * 0.6)) as usize;
-        let wrapped_lines = Self::wrap_text(&self.message, max_chars.max(30));
-        let mut y = dialog_rect.y + 52;
+        // Wrap and render message lines (use conservative char width estimate)
+        let max_chars = ((dialog_rect.width - 50) as f64 / (theme.font_size * 0.55)) as usize;
+        let wrapped_lines = Self::wrap_text(&self.message, max_chars.max(25));
+        let mut y = dialog_rect.y + 56;
         for line in wrapped_lines {
             renderer.text(
                 &line,
