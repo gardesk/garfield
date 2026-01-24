@@ -1595,10 +1595,24 @@ impl App {
                 let unique_name = make_unique_name(&pending.dest_dir, &name_str);
                 let final_dest = pending.dest_dir.join(&unique_name);
 
+                // Perform the copy/move with the unique name
                 let result = match pending.operation {
                     ClipboardOperation::Copy => {
                         if conflict_file.is_dir() {
-                            garfield::core::copy_path(&conflict_file, &pending.dest_dir)
+                            // For directories, copy then rename to unique name
+                            match garfield::core::copy_path(&conflict_file, &pending.dest_dir) {
+                                Ok(copied_path) => {
+                                    // Rename to unique name if different
+                                    if copied_path != final_dest {
+                                        std::fs::rename(&copied_path, &final_dest)
+                                            .map(|_| final_dest.clone())
+                                            .or(Ok(copied_path))
+                                    } else {
+                                        Ok(copied_path)
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            }
                         } else {
                             std::fs::copy(&conflict_file, &final_dest).map(|_| final_dest.clone())
                         }
@@ -1631,14 +1645,25 @@ impl App {
                     self.refresh();
 
                     // Select the newly pasted file and start rename
-                    if let Some(pane) = self.focused_pane_mut() {
+                    let found = if let Some(pane) = self.focused_pane_mut() {
                         if let Some(tab) = pane.active_tab_mut() {
                             // Find and select the file by name
                             if tab.select_by_name(&unique_name) {
                                 // Start rename with the suggested name pre-populated
                                 tab.start_rename_with_text(&unique_name);
+                                true
+                            } else {
+                                false
                             }
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
+
+                    if !found {
+                        self.status_bar.set_status_message(format!("Pasted as '{}' - press F2 to rename", unique_name));
                     }
 
                     // Store remaining conflicts if not apply_to_all

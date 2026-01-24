@@ -500,7 +500,14 @@ impl Tab {
     /// Select a file by name. Returns true if found and selected.
     pub fn select_by_name(&mut self, name: &str) -> bool {
         let entries = self.visible_entries();
-        if let Some(index) = entries.iter().position(|e| e.name == name) {
+        // Try exact match first
+        let index = entries.iter().position(|e| e.name == name)
+            // Then try case-insensitive match
+            .or_else(|| entries.iter().position(|e| e.name.eq_ignore_ascii_case(name)))
+            // Then try matching the end of the path
+            .or_else(|| entries.iter().position(|e| e.path.ends_with(name)));
+
+        if let Some(index) = index {
             match self.view_mode {
                 ViewMode::List => self.list_view.set_focused(index),
                 ViewMode::Grid => self.grid_view.set_focused(index),
