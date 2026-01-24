@@ -16,7 +16,7 @@ use std::path::PathBuf;
 const MAX_VISIBLE_ITEMS: usize = 8;
 
 /// Item height in pixels (name + description + padding).
-const ITEM_HEIGHT: u32 = 48;
+const ITEM_HEIGHT: u32 = 54;
 
 /// Input field height.
 const INPUT_HEIGHT: u32 = 36;
@@ -107,6 +107,46 @@ fn clean_exec_command(exec: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+/// Truncate text to fit within a given pixel width, adding ellipsis if needed.
+fn truncate_to_width(text: &str, max_width: f64, style: &TextStyle, renderer: &Renderer) -> String {
+    let max_width = max_width as u32;
+
+    // First check if it fits
+    if let Ok(metrics) = renderer.measure_text(text, style) {
+        if metrics.width <= max_width {
+            return text.to_string();
+        }
+    }
+
+    // Binary search for the right length
+    let ellipsis = "...";
+    let ellipsis_width = renderer.measure_text(ellipsis, style)
+        .map(|m| m.width)
+        .unwrap_or(20);
+
+    if max_width <= ellipsis_width {
+        return ellipsis.to_string();
+    }
+
+    let target_width = max_width - ellipsis_width;
+
+    // Start from full text and shrink
+    let chars: Vec<char> = text.chars().collect();
+    let mut end = chars.len();
+
+    while end > 0 {
+        let substr: String = chars[..end].iter().collect();
+        if let Ok(metrics) = renderer.measure_text(&substr, style) {
+            if metrics.width <= target_width {
+                return format!("{}{}", substr, ellipsis);
+            }
+        }
+        end -= 1;
+    }
+
+    ellipsis.to_string()
 }
 
 /// Get XDG application directories to scan.
@@ -643,29 +683,28 @@ impl AppPickerDialog {
                 renderer.fill_rounded_rect(item_rect, 4.0, theme.item_hover_background)?;
             }
 
-            // App name (positioned near top of item)
-            let name_y = item_y + 10;
+            // Available width for text (with padding on both sides)
+            let text_x = item_rect.x + 12;
+            let available_width = (item_rect.width as i32 - 24) as f64;
+
+            // App name (positioned near top of item with more padding)
+            let name_y = item_y + 12;
             renderer.text(
                 &app.name,
-                (item_rect.x + 12) as f64,
+                text_x as f64,
                 name_y as f64,
                 &name_style,
             )?;
 
             // App description (if any, positioned below name with gap)
             if let Some(desc) = &app.description {
-                // Truncate long descriptions
-                let max_desc_len = 70;
-                let truncated = if desc.len() > max_desc_len {
-                    format!("{}...", &desc[..max_desc_len])
-                } else {
-                    desc.clone()
-                };
+                // Truncate description to fit available width
+                let truncated = truncate_to_width(desc, available_width, &desc_style, renderer);
 
-                let desc_y = name_y + (theme.font_size as i32) + 6;
+                let desc_y = name_y + (theme.font_size as i32) + 8;
                 renderer.text(
                     &truncated,
-                    (item_rect.x + 12) as f64,
+                    text_x as f64,
                     desc_y as f64,
                     &desc_style,
                 )?;
