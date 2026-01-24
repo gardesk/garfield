@@ -195,6 +195,8 @@ pub struct ContextMenu {
     selected_count: usize,
     /// Whether clipboard has content (for paste enable).
     has_clipboard: bool,
+    /// Whether we're in the Trash folder.
+    in_trash: bool,
 }
 
 impl ContextMenu {
@@ -217,6 +219,7 @@ impl ContextMenu {
             submenu_hover_start: None,
             selected_count: 0,
             has_clipboard: false,
+            in_trash: false,
         }
     }
 
@@ -252,10 +255,12 @@ impl ContextMenu {
         context_type: ContextType,
         selected_count: usize,
         has_clipboard: bool,
+        in_trash: bool,
     ) {
         self.context_type = context_type;
         self.selected_count = selected_count;
         self.has_clipboard = has_clipboard;
+        self.in_trash = in_trash;
 
         // Build menu items based on context
         self.items = self.build_menu_items();
@@ -286,7 +291,7 @@ impl ContextMenu {
     }
 
     fn build_file_menu(&self) -> Vec<MenuItem> {
-        vec![
+        let mut items = vec![
             MenuItem::action("Open", ContextMenuAction::Open),
             MenuItem::submenu("Open With", self.build_open_with_submenu()),
             MenuItem::separator(),
@@ -295,15 +300,21 @@ impl ContextMenu {
             MenuItem::action("Duplicate", ContextMenuAction::Duplicate).with_shortcut("Ctrl+Shift+D"),
             MenuItem::separator(),
             MenuItem::action("Rename", ContextMenuAction::Rename).with_shortcut("F2"),
-            MenuItem::action("Move to Trash", ContextMenuAction::Trash).with_shortcut("Del"),
-            MenuItem::action("Delete Permanently", ContextMenuAction::Delete).with_shortcut("Shift+Del"),
-            MenuItem::separator(),
-            MenuItem::action("Properties", ContextMenuAction::Properties),
-        ]
+        ];
+
+        // Only show "Move to Trash" if not already in Trash
+        if !self.in_trash {
+            items.push(MenuItem::action("Move to Trash", ContextMenuAction::Trash).with_shortcut("Del"));
+        }
+        items.push(MenuItem::action("Delete Permanently", ContextMenuAction::Delete).with_shortcut("Shift+Del"));
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action("Properties", ContextMenuAction::Properties));
+
+        items
     }
 
     fn build_folder_menu(&self) -> Vec<MenuItem> {
-        vec![
+        let mut items = vec![
             MenuItem::action("Open", ContextMenuAction::Open),
             MenuItem::action("Open in New Tab", ContextMenuAction::OpenInNewTab),
             MenuItem::submenu("Open With", self.build_open_with_submenu()),
@@ -313,11 +324,17 @@ impl ContextMenu {
             MenuItem::action("Duplicate", ContextMenuAction::Duplicate).with_shortcut("Ctrl+Shift+D"),
             MenuItem::separator(),
             MenuItem::action("Rename", ContextMenuAction::Rename).with_shortcut("F2"),
-            MenuItem::action("Move to Trash", ContextMenuAction::Trash).with_shortcut("Del"),
-            MenuItem::action("Delete Permanently", ContextMenuAction::Delete).with_shortcut("Shift+Del"),
-            MenuItem::separator(),
-            MenuItem::action("Properties", ContextMenuAction::Properties),
-        ]
+        ];
+
+        // Only show "Move to Trash" if not already in Trash
+        if !self.in_trash {
+            items.push(MenuItem::action("Move to Trash", ContextMenuAction::Trash).with_shortcut("Del"));
+        }
+        items.push(MenuItem::action("Delete Permanently", ContextMenuAction::Delete).with_shortcut("Shift+Del"));
+        items.push(MenuItem::separator());
+        items.push(MenuItem::action("Properties", ContextMenuAction::Properties));
+
+        items
     }
 
     fn build_empty_space_menu(&self) -> Vec<MenuItem> {
@@ -338,23 +355,30 @@ impl ContextMenu {
 
     fn build_multi_selection_menu(&self) -> Vec<MenuItem> {
         let count = self.selected_count;
-        vec![
+        let mut items = vec![
             MenuItem::action(&format!("Copy {} items", count), ContextMenuAction::CopyAll)
                 .with_shortcut("Ctrl+C"),
             MenuItem::action(&format!("Cut {} items", count), ContextMenuAction::CutAll)
                 .with_shortcut("Ctrl+X"),
             MenuItem::separator(),
-            MenuItem::action(&format!("Move {} items to Trash", count), ContextMenuAction::TrashAll)
-                .with_shortcut("Del"),
-            MenuItem::action(&format!("Delete {} items", count), ContextMenuAction::DeleteAll)
-                .with_shortcut("Shift+Del"),
-        ]
+        ];
+
+        // Only show "Move to Trash" if not already in Trash
+        if !self.in_trash {
+            items.push(MenuItem::action(&format!("Move {} items to Trash", count), ContextMenuAction::TrashAll)
+                .with_shortcut("Del"));
+        }
+        items.push(MenuItem::action(&format!("Delete {} items", count), ContextMenuAction::DeleteAll)
+            .with_shortcut("Shift+Del"));
+
+        items
     }
 
     fn build_open_with_submenu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::action("Default Application", ContextMenuAction::OpenWith("xdg-open".to_string())),
-            MenuItem::action("Text Editor", ContextMenuAction::OpenWith("xdg-open".to_string())),
+            MenuItem::action("Text Editor", ContextMenuAction::OpenWith("$EDITOR".to_string())),
+            MenuItem::action("File Manager", ContextMenuAction::OpenWith("$FILEMANAGER".to_string())),
             MenuItem::separator(),
             MenuItem::action("Other Application...", ContextMenuAction::OpenWith(String::new())),
         ]

@@ -1743,6 +1743,18 @@ impl App {
 
     /// Show the context menu at the given position.
     fn show_context_menu(&mut self, pos: Point) {
+        // Check if we're in the Trash folder
+        let in_trash = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| {
+                if let Some(trash_dir) = garfield::core::trash_dir() {
+                    t.current_path().starts_with(&trash_dir)
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
         // First, check what's under the cursor and potentially select it
         let (context_type, selected_count) = if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
@@ -1776,7 +1788,7 @@ impl App {
         };
 
         let has_clipboard = self.clipboard.has_files();
-        self.context_menu.show(pos, context_type, selected_count, has_clipboard);
+        self.context_menu.show(pos, context_type, selected_count, has_clipboard, in_trash);
     }
 
     /// Handle a context menu action.
@@ -1815,11 +1827,83 @@ impl App {
 
         let paths = self.get_selected_paths();
         if let Some(path) = paths.first() {
-            match std::process::Command::new(app).arg(path).spawn() {
-                Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app)),
-                Err(e) => self.status_bar.set_status_message(format!("Failed: {}", e)),
+            // Resolve special application identifiers
+            let resolved_app = match app {
+                "$EDITOR" => self.resolve_text_editor(),
+                "$FILEMANAGER" => self.resolve_file_manager(),
+                other => Some(other.to_string()),
+            };
+
+            let Some(app_cmd) = resolved_app else {
+                self.status_bar.set_status_message("No suitable application found");
+                return;
+            };
+
+            match std::process::Command::new(&app_cmd).arg(path).spawn() {
+                Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_cmd)),
+                Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_cmd, e)),
             }
         }
+    }
+
+    /// Resolve text editor from environment or common editors.
+    fn resolve_text_editor(&self) -> Option<String> {
+        // Check environment variables first
+        if let Ok(editor) = std::env::var("VISUAL") {
+            if !editor.is_empty() && self.command_exists(&editor) {
+                return Some(editor);
+            }
+        }
+        if let Ok(editor) = std::env::var("EDITOR") {
+            if !editor.is_empty() && self.command_exists(&editor) {
+                return Some(editor);
+            }
+        }
+
+        // Try common GUI text editors
+        let editors = ["gedit", "kate", "mousepad", "xed", "pluma", "leafpad", "featherpad", "geany", "xfce4-terminal"];
+        for editor in editors {
+            if self.command_exists(editor) {
+                return Some(editor.to_string());
+            }
+        }
+
+        // Fallback to xdg-open
+        Some("xdg-open".to_string())
+    }
+
+    /// Resolve file manager from environment or common file managers.
+    fn resolve_file_manager(&self) -> Option<String> {
+        // Check XDG default
+        if let Ok(fm) = std::env::var("FILE_MANAGER") {
+            if !fm.is_empty() && self.command_exists(&fm) {
+                return Some(fm);
+            }
+        }
+
+        // Try common file managers (excluding garfield to avoid recursion)
+        let managers = ["nautilus", "dolphin", "thunar", "pcmanfm", "nemo", "caja"];
+        for manager in managers {
+            if self.command_exists(manager) {
+                return Some(manager.to_string());
+            }
+        }
+
+        // Fallback to xdg-open
+        Some("xdg-open".to_string())
+    }
+
+    /// Check if a command exists in PATH.
+    fn command_exists(&self, cmd: &str) -> bool {
+        // Extract just the command name (in case it's a full path or has args)
+        let cmd_name = cmd.split_whitespace().next().unwrap_or(cmd);
+        std::process::Command::new("which")
+            .arg(cmd_name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 
     /// Open folder in new tab.

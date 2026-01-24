@@ -168,11 +168,46 @@ impl ConfirmDialog {
 
     /// Get the dialog rectangle (centered in bounds).
     fn dialog_rect(&self) -> Rect {
-        let dialog_width = 400.min(self.bounds.width.saturating_sub(40));
-        let dialog_height = 180.min(self.bounds.height.saturating_sub(40));
+        // Calculate width based on message length, with min/max constraints
+        let base_width = 450;
+        let dialog_width = base_width.min(self.bounds.width.saturating_sub(40));
+        let dialog_height = 200.min(self.bounds.height.saturating_sub(40));
         let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
         let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
         Rect::new(x, y, dialog_width, dialog_height)
+    }
+
+    /// Wrap text to fit within max_width (simple word wrapping).
+    fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        for line in text.lines() {
+            if line.len() <= max_chars {
+                lines.push(line.to_string());
+            } else {
+                // Word wrap
+                let mut current_line = String::new();
+                for word in line.split_whitespace() {
+                    if current_line.is_empty() {
+                        if word.len() > max_chars {
+                            // Word too long, truncate with ellipsis
+                            lines.push(format!("{}...", &word[..max_chars.saturating_sub(3)]));
+                        } else {
+                            current_line = word.to_string();
+                        }
+                    } else if current_line.len() + 1 + word.len() <= max_chars {
+                        current_line.push(' ');
+                        current_line.push_str(word);
+                    } else {
+                        lines.push(current_line);
+                        current_line = word.to_string();
+                    }
+                }
+                if !current_line.is_empty() {
+                    lines.push(current_line);
+                }
+            }
+        }
+        lines
     }
 
     /// Get button rectangles (confirm, cancel).
@@ -227,11 +262,13 @@ impl ConfirmDialog {
             .font_size(theme.font_size)
             .color(theme.item_foreground);
 
-        // Render message lines
+        // Wrap and render message lines
+        let max_chars = ((dialog_rect.width - 40) as f64 / (theme.font_size * 0.6)) as usize;
+        let wrapped_lines = Self::wrap_text(&self.message, max_chars.max(30));
         let mut y = dialog_rect.y + 52;
-        for line in self.message.lines() {
+        for line in wrapped_lines {
             renderer.text(
-                line,
+                &line,
                 (dialog_rect.x + 20) as f64,
                 y as f64,
                 &msg_style,
