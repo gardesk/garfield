@@ -34,6 +34,13 @@ serde_json.workspace = true
 dirs.workspace = true
 chrono.workspace = true
 libc.workspace = true
+walkdir.workspace = true
+
+# Desktop entries
+freedesktop_entry_parser.workspace = true
+
+# Fuzzy matching
+nucleo-matcher.workspace = true
 
 # IPC
 garfield-ipc.workspace = true

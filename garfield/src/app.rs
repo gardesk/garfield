@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -84,6 +84,8 @@ pub struct App {
     context_menu: ContextMenu,
     /// Input dialog for text entry.
     input_dialog: InputDialog,
+    /// Application picker dialog.
+    app_picker: AppPickerDialog,
     /// Path pending "Open With" custom application.
     pending_open_with_path: Option<PathBuf>,
     /// Paths pending delete confirmation.
@@ -208,6 +210,9 @@ impl App {
         // Create input dialog (full window bounds)
         let input_dialog = InputDialog::new(Rect::new(0, 0, width, height));
 
+        // Create app picker dialog (full window bounds)
+        let app_picker = AppPickerDialog::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -258,6 +263,7 @@ impl App {
             progress_dialog,
             context_menu,
             input_dialog,
+            app_picker,
             pending_open_with_path: None,
             pending_delete_paths: Vec::new(),
             undo_stack: UndoStack::new(),
@@ -372,6 +378,14 @@ impl App {
         if self.input_dialog.is_visible() {
             if let Some(result) = self.input_dialog.on_click(pos) {
                 self.handle_input_result(result);
+            }
+            return;
+        }
+
+        // Check app picker
+        if self.app_picker.is_visible() {
+            if let Some(result) = self.app_picker.on_click(pos) {
+                self.handle_app_picker_result(result);
             }
             return;
         }
@@ -635,6 +649,12 @@ impl App {
             return;
         }
 
+        // Handle app picker hover
+        if self.app_picker.is_visible() {
+            self.app_picker.on_mouse_move(pos);
+            return;
+        }
+
         // Handle context menu hover
         if self.context_menu.is_visible() {
             self.context_menu.on_mouse_move(pos);
@@ -737,6 +757,14 @@ impl App {
         if self.input_dialog.is_visible() {
             if let Some(result) = self.input_dialog.handle_key(key) {
                 self.handle_input_result(result);
+            }
+            return;
+        }
+
+        // Handle app picker when visible
+        if self.app_picker.is_visible() {
+            if let Some(result) = self.app_picker.handle_key(key) {
+                self.handle_app_picker_result(result);
             }
             return;
         }
@@ -1560,6 +1588,19 @@ impl App {
         }
     }
 
+    /// Handle app picker result.
+    fn handle_app_picker_result(&mut self, result: AppPickerResult) {
+        match result {
+            AppPickerResult::Selected(exec) => {
+                // Open the pending file with the selected application
+                self.open_with_custom(&exec);
+            }
+            AppPickerResult::Cancelled => {
+                self.pending_open_with_path = None;
+            }
+        }
+    }
+
     /// Handle conflict dialog result.
     fn handle_conflict_action(&mut self, action: ConflictAction) {
         let pending = match self.pending_paste.take() {
@@ -1869,10 +1910,10 @@ impl App {
             return;
         };
 
-        // Handle $CUSTOM - show input dialog
+        // Handle $CUSTOM - show app picker
         if app == "$CUSTOM" {
             self.pending_open_with_path = Some(path);
-            self.input_dialog.show("Open With", "Enter application name:", "");
+            self.app_picker.show();
             return;
         }
 
@@ -2481,6 +2522,7 @@ impl App {
         self.progress_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.context_menu.set_bounds(Rect::new(0, 0, width, height));
         self.input_dialog.set_bounds(Rect::new(0, 0, width, height));
+        self.app_picker.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -2552,6 +2594,9 @@ impl App {
 
         // Draw input dialog overlay (on top of everything)
         self.input_dialog.render(&self.renderer)?;
+
+        // Draw app picker overlay (on top of everything)
+        self.app_picker.render(&self.renderer)?;
 
         // Draw context menu overlay
         self.context_menu.render(&self.renderer)?;

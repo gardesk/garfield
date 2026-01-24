@@ -1,6 +1,7 @@
 //! UI components for garfield.
 
 pub mod address_bar;
+pub mod app_picker;
 pub mod breadcrumb;
 pub mod column_view;
 pub mod context_menu;
@@ -16,6 +17,7 @@ pub mod tab_bar;
 pub mod toolbar;
 
 pub use address_bar::AddressBar;
+pub use app_picker::{AppPickerDialog, AppPickerResult};
 pub use context_menu::{ContextMenu, ContextMenuAction, ContextType};
 pub use dialog::{ConfirmDialog, ConflictAction, ConflictDialog, DialogResult, InputDialog, InputResult, ProgressDialog, ProgressInfo};
 pub use breadcrumb::Breadcrumb;
