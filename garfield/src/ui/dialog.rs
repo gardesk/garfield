@@ -178,36 +178,49 @@ impl ConfirmDialog {
         Rect::new(x, y, dialog_width, dialog_height)
     }
 
-    /// Wrap text to fit within max_width (simple word wrapping).
-    fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    /// Wrap text to fit within max_width pixels using actual text measurement.
+    fn wrap_text_to_width(text: &str, max_width: u32, renderer: &Renderer, style: &TextStyle) -> Vec<String> {
         let mut lines = Vec::new();
+
         for line in text.lines() {
-            if line.len() <= max_chars {
-                lines.push(line.to_string());
-            } else {
-                // Word wrap
-                let mut current_line = String::new();
-                for word in line.split_whitespace() {
-                    if current_line.is_empty() {
-                        if word.len() > max_chars {
-                            // Word too long, truncate with ellipsis
-                            lines.push(format!("{}...", &word[..max_chars.saturating_sub(3)]));
-                        } else {
-                            current_line = word.to_string();
-                        }
-                    } else if current_line.len() + 1 + word.len() <= max_chars {
-                        current_line.push(' ');
-                        current_line.push_str(word);
-                    } else {
-                        lines.push(current_line);
-                        current_line = word.to_string();
-                    }
-                }
-                if !current_line.is_empty() {
-                    lines.push(current_line);
+            // Check if the whole line fits
+            if let Ok(metrics) = renderer.measure_text(line, style) {
+                if metrics.width <= max_width {
+                    lines.push(line.to_string());
+                    continue;
                 }
             }
+
+            // Need to wrap - build line word by word using pixel measurement
+            let mut current_line = String::new();
+            for word in line.split_whitespace() {
+                let test_line = if current_line.is_empty() {
+                    word.to_string()
+                } else {
+                    format!("{} {}", current_line, word)
+                };
+
+                let fits = renderer.measure_text(&test_line, style)
+                    .map(|m| m.width <= max_width)
+                    .unwrap_or(false);
+
+                if fits {
+                    current_line = test_line;
+                } else if current_line.is_empty() {
+                    // Single word doesn't fit - add it anyway (will overflow but better than infinite loop)
+                    lines.push(word.to_string());
+                } else {
+                    // Push current line and start new one with this word
+                    lines.push(current_line);
+                    current_line = word.to_string();
+                }
+            }
+
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
         }
+
         lines
     }
 
@@ -264,13 +277,13 @@ impl ConfirmDialog {
             .font_size(theme.font_size)
             .color(theme.item_foreground);
 
-        // Wrap and render message lines (use conservative char width estimate)
-        let max_chars = ((dialog_rect.width - 50) as f64 / (theme.font_size * 0.55)) as usize;
-        let wrapped_lines = Self::wrap_text(&self.message, max_chars.max(25));
+        // Wrap text using pixel-based measurement (40px padding on each side)
+        let available_width = dialog_rect.width.saturating_sub(40);
+        let wrapped_lines = Self::wrap_text_to_width(&self.message, available_width, renderer, &msg_style);
         let mut y = dialog_rect.y + 56;
-        for line in wrapped_lines {
+        for line in &wrapped_lines {
             renderer.text(
-                &line,
+                line,
                 (dialog_rect.x + 20) as f64,
                 y as f64,
                 &msg_style,
@@ -299,10 +312,10 @@ impl ConfirmDialog {
             .font_size(theme.font_size)
             .color(theme.foreground);
 
-        let confirm_text_width = renderer.measure_text(&self.confirm_label, &button_style)?.width;
-        let confirm_text_x = confirm_rect.x + (confirm_rect.width as i32 - confirm_text_width as i32) / 2;
-        let button_text_y = confirm_rect.y + (confirm_rect.height as i32 - theme.font_size as i32) / 2;
-        renderer.text(&self.confirm_label, confirm_text_x as f64, button_text_y as f64, &button_style)?;
+        let confirm_metrics = renderer.measure_text(&self.confirm_label, &button_style)?;
+        let confirm_text_x = confirm_rect.x + (confirm_rect.width as i32 - confirm_metrics.width as i32) / 2;
+        let confirm_text_y = confirm_rect.y + (confirm_rect.height as i32 - confirm_metrics.height as i32) / 2;
+        renderer.text(&self.confirm_label, confirm_text_x as f64, confirm_text_y as f64, &button_style)?;
 
         // Cancel button
         let cancel_focused = self.focused_button == 1;
@@ -317,9 +330,10 @@ impl ConfirmDialog {
             renderer.stroke_rounded_rect(cancel_rect, 4.0, theme.foreground, 2.0)?;
         }
 
-        let cancel_text_width = renderer.measure_text(&self.cancel_label, &button_style)?.width;
-        let cancel_text_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_text_width as i32) / 2;
-        renderer.text(&self.cancel_label, cancel_text_x as f64, button_text_y as f64, &button_style)?;
+        let cancel_metrics = renderer.measure_text(&self.cancel_label, &button_style)?;
+        let cancel_text_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_metrics.width as i32) / 2;
+        let cancel_text_y = cancel_rect.y + (cancel_rect.height as i32 - cancel_metrics.height as i32) / 2;
+        renderer.text(&self.cancel_label, cancel_text_x as f64, cancel_text_y as f64, &button_style)?;
 
         Ok(())
     }
@@ -906,9 +920,9 @@ impl ConflictDialog {
                 renderer.stroke_rounded_rect(*rect, 4.0, theme.foreground, 2.0)?;
             }
 
-            let text_width = renderer.measure_text(label, &button_style)?.width;
-            let text_x = rect.x + (rect.width as i32 - text_width as i32) / 2;
-            let text_y = rect.y + (rect.height as i32 - (theme.font_size - 1.0) as i32) / 2;
+            let text_metrics = renderer.measure_text(label, &button_style)?;
+            let text_x = rect.x + (rect.width as i32 - text_metrics.width as i32) / 2;
+            let text_y = rect.y + (rect.height as i32 - text_metrics.height as i32) / 2;
             renderer.text(label, text_x as f64, text_y as f64, &button_style)?;
         }
 
@@ -1245,10 +1259,10 @@ impl InputDialog {
         }
 
         let ok_text = "OK";
-        let ok_width = renderer.measure_text(ok_text, &button_style)?.width;
-        let ok_x = ok_rect.x + (ok_rect.width as i32 - ok_width as i32) / 2;
-        let button_text_y = ok_rect.y + (ok_rect.height as i32 - theme.font_size as i32) / 2;
-        renderer.text(ok_text, ok_x as f64, button_text_y as f64, &button_style)?;
+        let ok_metrics = renderer.measure_text(ok_text, &button_style)?;
+        let ok_x = ok_rect.x + (ok_rect.width as i32 - ok_metrics.width as i32) / 2;
+        let ok_text_y = ok_rect.y + (ok_rect.height as i32 - ok_metrics.height as i32) / 2;
+        renderer.text(ok_text, ok_x as f64, ok_text_y as f64, &button_style)?;
 
         // Cancel button
         let cancel_focused = self.focused == 2;
@@ -1264,9 +1278,10 @@ impl InputDialog {
         }
 
         let cancel_text = "Cancel";
-        let cancel_width = renderer.measure_text(cancel_text, &button_style)?.width;
-        let cancel_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_width as i32) / 2;
-        renderer.text(cancel_text, cancel_x as f64, button_text_y as f64, &button_style)?;
+        let cancel_metrics = renderer.measure_text(cancel_text, &button_style)?;
+        let cancel_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_metrics.width as i32) / 2;
+        let cancel_text_y = cancel_rect.y + (cancel_rect.height as i32 - cancel_metrics.height as i32) / 2;
+        renderer.text(cancel_text, cancel_x as f64, cancel_text_y as f64, &button_style)?;
 
         Ok(())
     }
