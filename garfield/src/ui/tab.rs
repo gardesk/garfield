@@ -271,6 +271,16 @@ impl Tab {
         self.refresh();
     }
 
+    /// Get current sort order.
+    pub fn sort_order(&self) -> SortOrder {
+        self.sort_order
+    }
+
+    /// Get current sort direction.
+    pub fn sort_direction(&self) -> SortDirection {
+        self.sort_direction
+    }
+
     // === Navigation (keyboard) ===
 
     pub fn select_prev(&mut self) {

@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -80,6 +80,8 @@ pub struct App {
     conflict_dialog: ConflictDialog,
     /// Progress dialog for long operations.
     progress_dialog: ProgressDialog,
+    /// Context menu for right-click actions.
+    context_menu: ContextMenu,
     /// Paths pending delete confirmation.
     pending_delete_paths: Vec<PathBuf>,
     /// Undo/redo stack for file operations.
@@ -196,6 +198,9 @@ impl App {
         // Create progress dialog (full window bounds)
         let progress_dialog = ProgressDialog::new(Rect::new(0, 0, width, height));
 
+        // Create context menu (full window bounds for positioning)
+        let context_menu = ContextMenu::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -244,6 +249,7 @@ impl App {
             confirm_dialog,
             conflict_dialog,
             progress_dialog,
+            context_menu,
             pending_delete_paths: Vec::new(),
             undo_stack: UndoStack::new(),
             pending_paste: None,
@@ -355,6 +361,20 @@ impl App {
 
         // Check help modal (clicking outside closes it)
         if self.help_modal.on_click(pos) {
+            return;
+        }
+
+        // Check context menu
+        if self.context_menu.is_visible() {
+            if let Some(action) = self.context_menu.on_click(pos) {
+                self.handle_context_menu_action(action);
+            }
+            return;
+        }
+
+        // Right-click shows context menu
+        if button == Some(MouseButton::Right) {
+            self.show_context_menu(pos);
             return;
         }
 
@@ -592,6 +612,12 @@ impl App {
             return;
         }
 
+        // Handle context menu hover
+        if self.context_menu.is_visible() {
+            self.context_menu.on_mouse_move(pos);
+            return;
+        }
+
         // Handle sidebar resize in progress
         if self.sidebar_resizing {
             let new_width = (pos.x - self.sidebar.bounds().x).max(0) as u32;
@@ -695,6 +721,14 @@ impl App {
             return;
         }
 
+        // Handle context menu when visible
+        if self.context_menu.is_visible() {
+            if let Some(action) = self.context_menu.handle_key(key) {
+                self.handle_context_menu_action(action);
+            }
+            return;
+        }
+
         // F1 toggles help
         if *key == Key::F1 {
             self.help_modal.show();
@@ -764,11 +798,19 @@ impl App {
             }
         }
 
-        // Ctrl+Shift keybinds (splits, new folder)
+        // Ctrl+Shift keybinds (splits, new folder, new file, duplicate)
         if modifiers.ctrl && modifiers.shift {
             match key {
                 Key::Char('n') | Key::Char('N') => {
                     self.create_new_folder();
+                    return;
+                }
+                Key::Char('f') | Key::Char('F') => {
+                    self.create_new_file();
+                    return;
+                }
+                Key::Char('d') | Key::Char('D') => {
+                    self.duplicate_selected();
                     return;
                 }
                 Key::Char('h') | Key::Char('H') => {
@@ -1699,6 +1741,122 @@ impl App {
         let _ = self.window.connection().flush();
     }
 
+    /// Show the context menu at the given position.
+    fn show_context_menu(&mut self, pos: Point) {
+        // Determine context type based on what's under the cursor
+        let (context_type, selected_count) = if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                let selected = tab.selected_paths();
+
+                if let Some(entry) = tab.entry_at_point(pos) {
+                    // Clicked on an item
+                    if selected.len() > 1 && selected.contains(&entry.path) {
+                        (ContextType::MultiSelection, selected.len())
+                    } else if entry.is_dir() {
+                        (ContextType::Folder, 1)
+                    } else {
+                        (ContextType::File, 1)
+                    }
+                } else {
+                    // Clicked on empty space
+                    (ContextType::EmptySpace, 0)
+                }
+            } else {
+                (ContextType::EmptySpace, 0)
+            }
+        } else {
+            (ContextType::EmptySpace, 0)
+        };
+
+        let has_clipboard = self.clipboard.has_files();
+        self.context_menu.show(pos, context_type, selected_count, has_clipboard);
+    }
+
+    /// Handle a context menu action.
+    fn handle_context_menu_action(&mut self, action: ContextMenuAction) {
+        match action {
+            ContextMenuAction::Open => self.enter_selected(),
+            ContextMenuAction::OpenWith(app) => self.open_with(&app),
+            ContextMenuAction::OpenInNewTab => self.open_in_new_tab(),
+            ContextMenuAction::Copy | ContextMenuAction::CopyAll => self.copy_selected(),
+            ContextMenuAction::Cut | ContextMenuAction::CutAll => self.cut_selected(),
+            ContextMenuAction::Duplicate => self.duplicate_selected(),
+            ContextMenuAction::Rename => self.start_rename(),
+            ContextMenuAction::Trash | ContextMenuAction::TrashAll => self.trash_selected(),
+            ContextMenuAction::Delete | ContextMenuAction::DeleteAll => self.delete_selected_permanently(),
+            ContextMenuAction::Properties => self.show_properties(),
+            ContextMenuAction::NewFile => self.create_new_file(),
+            ContextMenuAction::NewFolder => self.create_new_folder(),
+            ContextMenuAction::Paste => self.paste(),
+            ContextMenuAction::Refresh => self.refresh(),
+            ContextMenuAction::ViewList => self.set_view_mode(ViewMode::List),
+            ContextMenuAction::ViewGrid => self.set_view_mode(ViewMode::Grid),
+            ContextMenuAction::ViewColumns => self.set_view_mode(ViewMode::Columns),
+            ContextMenuAction::SortByName => self.set_sort_order(garfield::core::SortOrder::Name),
+            ContextMenuAction::SortBySize => self.set_sort_order(garfield::core::SortOrder::Size),
+            ContextMenuAction::SortByDate => self.set_sort_order(garfield::core::SortOrder::Modified),
+            ContextMenuAction::SortByType => self.set_sort_order(garfield::core::SortOrder::Type),
+        }
+    }
+
+    /// Open selected item with a specific application.
+    fn open_with(&mut self, app: &str) {
+        if app.is_empty() {
+            self.status_bar.set_status_message("Application picker not implemented");
+            return;
+        }
+
+        let paths = self.get_selected_paths();
+        if let Some(path) = paths.first() {
+            match std::process::Command::new(app).arg(path).spawn() {
+                Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app)),
+                Err(e) => self.status_bar.set_status_message(format!("Failed: {}", e)),
+            }
+        }
+    }
+
+    /// Open folder in new tab.
+    fn open_in_new_tab(&mut self) {
+        let entry_path = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .and_then(|t| t.selected_entry())
+            .filter(|e| e.is_dir())
+            .map(|e| e.path.clone());
+
+        if let Some(path) = entry_path {
+            if let Some(pane) = self.focused_pane_mut() {
+                pane.add_tab(path);
+            }
+            self.sync_tab_bar();
+            self.sync_breadcrumb();
+            self.update_status_bar();
+        }
+    }
+
+    /// Show properties dialog (placeholder).
+    fn show_properties(&mut self) {
+        self.status_bar.set_status_message("Properties dialog not implemented");
+    }
+
+    /// Set sort order from context menu.
+    fn set_sort_order(&mut self, order: garfield::core::SortOrder) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                let current_dir = tab.sort_direction();
+                // Toggle direction if same order
+                let new_dir = if tab.sort_order() == order {
+                    match current_dir {
+                        garfield::core::SortDirection::Ascending => garfield::core::SortDirection::Descending,
+                        garfield::core::SortDirection::Descending => garfield::core::SortDirection::Ascending,
+                    }
+                } else {
+                    garfield::core::SortDirection::Ascending
+                };
+                tab.set_sort(order, new_dir);
+            }
+        }
+    }
+
     /// Create a new folder in the current directory.
     fn create_new_folder(&mut self) {
         let current_dir = self.focused_pane()
@@ -1729,6 +1887,106 @@ impl App {
             Err(e) => {
                 self.status_bar.set_status_message(format!("Failed to create folder: {}", e));
             }
+        }
+    }
+
+    /// Create a new empty file in the current directory.
+    fn create_new_file(&mut self) {
+        use garfield::core::make_unique_name;
+
+        let current_dir = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| t.current_path().clone());
+
+        let current_dir = match current_dir {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Generate unique name
+        let unique_name = make_unique_name(&current_dir, "New File");
+        let path = current_dir.join(&unique_name);
+
+        match std::fs::File::create(&path) {
+            Ok(_) => {
+                self.status_bar.set_status_message(format!("Created '{}'", unique_name));
+                self.refresh();
+
+                // Select the new file and start rename
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        if tab.select_by_name(&unique_name) {
+                            tab.start_rename();
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_bar.set_status_message(format!("Failed to create file: {}", e));
+            }
+        }
+    }
+
+    /// Duplicate the selected files/folders in the current directory.
+    fn duplicate_selected(&mut self) {
+        use garfield::core::make_unique_name;
+
+        let selected = self.get_selected_paths();
+        if selected.is_empty() {
+            self.status_bar.set_status_message("No items selected");
+            return;
+        }
+
+        let dest_dir = self.focused_pane()
+            .and_then(|p| p.active_tab())
+            .map(|t| t.current_path().clone());
+
+        let dest_dir = match dest_dir {
+            Some(d) => d,
+            None => return,
+        };
+
+        let mut success_count = 0;
+        let mut last_created_name = String::new();
+
+        for path in &selected {
+            if let Some(name) = path.file_name() {
+                let name_str = name.to_string_lossy();
+                let unique_name = make_unique_name(&dest_dir, &name_str);
+                let dest = dest_dir.join(&unique_name);
+
+                let result = if path.is_dir() {
+                    garfield::core::copy_to_path(path, &dest)
+                } else {
+                    std::fs::copy(path, &dest).map(|_| dest.clone())
+                };
+
+                if result.is_ok() {
+                    success_count += 1;
+                    last_created_name = unique_name;
+                }
+            }
+        }
+
+        if success_count > 0 {
+            let msg = if success_count == 1 {
+                format!("Duplicated as '{}'", last_created_name)
+            } else {
+                format!("Duplicated {} items", success_count)
+            };
+            self.status_bar.set_status_message(msg);
+            self.refresh();
+
+            // Select the last duplicated item
+            if !last_created_name.is_empty() {
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.select_by_name(&last_created_name);
+                    }
+                }
+            }
+        } else {
+            self.status_bar.set_status_message("Failed to duplicate items");
         }
     }
 
@@ -2087,6 +2345,7 @@ impl App {
         self.confirm_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.conflict_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.progress_dialog.set_bounds(Rect::new(0, 0, width, height));
+        self.context_menu.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -2155,6 +2414,9 @@ impl App {
 
         // Draw conflict dialog overlay (on top of everything)
         self.conflict_dialog.render(&self.renderer)?;
+
+        // Draw context menu overlay
+        self.context_menu.render(&self.renderer)?;
 
         // Draw progress dialog overlay (on top of everything)
         self.progress_dialog.render(&self.renderer)?;

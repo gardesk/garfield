@@ -3,6 +3,7 @@
 pub mod address_bar;
 pub mod breadcrumb;
 pub mod column_view;
+pub mod context_menu;
 pub mod dialog;
 pub mod grid_view;
 pub mod help_modal;
@@ -15,6 +16,7 @@ pub mod tab_bar;
 pub mod toolbar;
 
 pub use address_bar::AddressBar;
+pub use context_menu::{ContextMenu, ContextMenuAction, ContextType};
 pub use dialog::{ConfirmDialog, ConflictAction, ConflictDialog, DialogResult, ProgressDialog, ProgressInfo};
 pub use breadcrumb::Breadcrumb;
 pub use column_view::{ColumnClickResult, ColumnView};
