@@ -53,20 +53,24 @@ impl OperationResult {
     }
 }
 
-/// Copy a file or directory to a destination.
+/// Copy a file or directory to a destination directory (uses source filename).
 pub fn copy_path(source: &Path, dest_dir: &Path) -> io::Result<PathBuf> {
     let file_name = source.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "Invalid source path")
     })?;
     let dest = dest_dir.join(file_name);
+    copy_to_path(source, &dest)
+}
 
+/// Copy a file or directory to a specific destination path.
+pub fn copy_to_path(source: &Path, dest: &Path) -> io::Result<PathBuf> {
     if source.is_dir() {
-        copy_dir_recursive(source, &dest)?;
+        copy_dir_recursive(source, dest)?;
     } else {
-        fs::copy(source, &dest)?;
+        fs::copy(source, dest)?;
     }
 
-    Ok(dest)
+    Ok(dest.to_path_buf())
 }
 
 /// Copy a directory recursively.

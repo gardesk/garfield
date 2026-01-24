@@ -13,7 +13,7 @@ pub use entry::{
 };
 pub use history::History;
 pub use operations::{
-    copy_files, copy_path, create_directory, delete_files, delete_path,
+    copy_files, copy_path, copy_to_path, create_directory, delete_files, delete_path,
     make_unique_name, move_files, move_path, rename_path, OperationResult,
 };
 pub use trash::{empty_trash, restore_from_trash, trash_file, trash_files, trash_dir};

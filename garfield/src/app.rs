@@ -98,8 +98,6 @@ struct PendingPaste {
     dest_dir: PathBuf,
     /// Files that conflict (exist in destination).
     conflicts: Vec<PathBuf>,
-    /// Current conflict index being resolved.
-    current_conflict: usize,
 }
 
 impl App {
@@ -1353,7 +1351,6 @@ impl App {
                     operation: op,
                     dest_dir,
                     conflicts,
-                    current_conflict: 0,
                 });
                 return;
             }
@@ -1598,24 +1595,8 @@ impl App {
                 // Perform the copy/move with the unique name
                 let result = match pending.operation {
                     ClipboardOperation::Copy => {
-                        if conflict_file.is_dir() {
-                            // For directories, copy then rename to unique name
-                            match garfield::core::copy_path(&conflict_file, &pending.dest_dir) {
-                                Ok(copied_path) => {
-                                    // Rename to unique name if different
-                                    if copied_path != final_dest {
-                                        std::fs::rename(&copied_path, &final_dest)
-                                            .map(|_| final_dest.clone())
-                                            .or(Ok(copied_path))
-                                    } else {
-                                        Ok(copied_path)
-                                    }
-                                }
-                                Err(e) => Err(e),
-                            }
-                        } else {
-                            std::fs::copy(&conflict_file, &final_dest).map(|_| final_dest.clone())
-                        }
+                        // Copy directly to the unique destination path
+                        garfield::core::copy_to_path(&conflict_file, &final_dest)
                     }
                     ClipboardOperation::Cut => {
                         std::fs::rename(&conflict_file, &final_dest).map(|_| final_dest.clone())
