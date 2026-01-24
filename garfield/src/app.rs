@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -82,6 +82,10 @@ pub struct App {
     progress_dialog: ProgressDialog,
     /// Context menu for right-click actions.
     context_menu: ContextMenu,
+    /// Input dialog for text entry.
+    input_dialog: InputDialog,
+    /// Path pending "Open With" custom application.
+    pending_open_with_path: Option<PathBuf>,
     /// Paths pending delete confirmation.
     pending_delete_paths: Vec<PathBuf>,
     /// Undo/redo stack for file operations.
@@ -201,6 +205,9 @@ impl App {
         // Create context menu (full window bounds for positioning)
         let context_menu = ContextMenu::new(Rect::new(0, 0, width, height));
 
+        // Create input dialog (full window bounds)
+        let input_dialog = InputDialog::new(Rect::new(0, 0, width, height));
+
         // Content area bounds (for panes)
         let content_bounds = Rect::new(
             sidebar_w as i32,
@@ -250,6 +257,8 @@ impl App {
             conflict_dialog,
             progress_dialog,
             context_menu,
+            input_dialog,
+            pending_open_with_path: None,
             pending_delete_paths: Vec::new(),
             undo_stack: UndoStack::new(),
             pending_paste: None,
@@ -355,6 +364,14 @@ impl App {
         if self.conflict_dialog.is_visible() {
             if let Some(action) = self.conflict_dialog.on_click(pos) {
                 self.handle_conflict_action(action);
+            }
+            return;
+        }
+
+        // Check input dialog
+        if self.input_dialog.is_visible() {
+            if let Some(result) = self.input_dialog.on_click(pos) {
+                self.handle_input_result(result);
             }
             return;
         }
@@ -612,6 +629,12 @@ impl App {
             return;
         }
 
+        // Handle input dialog hover
+        if self.input_dialog.is_visible() {
+            self.input_dialog.on_mouse_move(pos);
+            return;
+        }
+
         // Handle context menu hover
         if self.context_menu.is_visible() {
             self.context_menu.on_mouse_move(pos);
@@ -706,6 +729,14 @@ impl App {
         if self.conflict_dialog.is_visible() {
             if let Some(action) = self.conflict_dialog.handle_key(key) {
                 self.handle_conflict_action(action);
+            }
+            return;
+        }
+
+        // Handle input dialog when visible
+        if self.input_dialog.is_visible() {
+            if let Some(result) = self.input_dialog.handle_key(key) {
+                self.handle_input_result(result);
             }
             return;
         }
@@ -1516,6 +1547,19 @@ impl App {
         }
     }
 
+    /// Handle input dialog result.
+    fn handle_input_result(&mut self, result: InputResult) {
+        match result {
+            InputResult::Submitted(value) => {
+                // Currently only used for "Open With" custom application
+                self.open_with_custom(&value);
+            }
+            InputResult::Cancelled => {
+                self.pending_open_with_path = None;
+            }
+        }
+    }
+
     /// Handle conflict dialog result.
     fn handle_conflict_action(&mut self, action: ConflictAction) {
         let pending = match self.pending_paste.take() {
@@ -1820,29 +1864,49 @@ impl App {
 
     /// Open selected item with a specific application.
     fn open_with(&mut self, app: &str) {
-        if app.is_empty() {
-            self.status_bar.set_status_message("Application picker not implemented");
+        let paths = self.get_selected_paths();
+        let Some(path) = paths.first().cloned() else {
+            return;
+        };
+
+        // Handle $CUSTOM - show input dialog
+        if app == "$CUSTOM" {
+            self.pending_open_with_path = Some(path);
+            self.input_dialog.show("Open With", "Enter application name:", "");
             return;
         }
 
-        let paths = self.get_selected_paths();
-        if let Some(path) = paths.first() {
-            // Resolve special application identifiers
-            let resolved_app = match app {
-                "$EDITOR" => self.resolve_text_editor(),
-                "$FILEMANAGER" => self.resolve_file_manager(),
-                other => Some(other.to_string()),
-            };
+        // Resolve special application identifiers
+        let resolved_app = match app {
+            "$EDITOR" => self.resolve_text_editor(),
+            other => Some(other.to_string()),
+        };
 
-            let Some(app_cmd) = resolved_app else {
-                self.status_bar.set_status_message("No suitable application found");
-                return;
-            };
+        let Some(app_cmd) = resolved_app else {
+            self.status_bar.set_status_message("No suitable application found");
+            return;
+        };
 
-            match std::process::Command::new(&app_cmd).arg(path).spawn() {
-                Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_cmd)),
-                Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_cmd, e)),
-            }
+        match std::process::Command::new(&app_cmd).arg(&path).spawn() {
+            Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_cmd)),
+            Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_cmd, e)),
+        }
+    }
+
+    /// Open file with custom application (from input dialog).
+    fn open_with_custom(&mut self, app_name: &str) {
+        let Some(path) = self.pending_open_with_path.take() else {
+            return;
+        };
+
+        if app_name.is_empty() {
+            self.status_bar.set_status_message("No application specified");
+            return;
+        }
+
+        match std::process::Command::new(app_name).arg(&path).spawn() {
+            Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_name)),
+            Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_name, e)),
         }
     }
 
@@ -1865,27 +1929,6 @@ impl App {
         for editor in editors {
             if self.command_exists(editor) {
                 return Some(editor.to_string());
-            }
-        }
-
-        // Fallback to xdg-open
-        Some("xdg-open".to_string())
-    }
-
-    /// Resolve file manager from environment or common file managers.
-    fn resolve_file_manager(&self) -> Option<String> {
-        // Check XDG default
-        if let Ok(fm) = std::env::var("FILE_MANAGER") {
-            if !fm.is_empty() && self.command_exists(&fm) {
-                return Some(fm);
-            }
-        }
-
-        // Try common file managers (excluding garfield to avoid recursion)
-        let managers = ["nautilus", "dolphin", "thunar", "pcmanfm", "nemo", "caja"];
-        for manager in managers {
-            if self.command_exists(manager) {
-                return Some(manager.to_string());
             }
         }
 
@@ -2437,6 +2480,7 @@ impl App {
         self.conflict_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.progress_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.context_menu.set_bounds(Rect::new(0, 0, width, height));
+        self.input_dialog.set_bounds(Rect::new(0, 0, width, height));
     }
 
     /// Render the application.
@@ -2505,6 +2549,9 @@ impl App {
 
         // Draw conflict dialog overlay (on top of everything)
         self.conflict_dialog.render(&self.renderer)?;
+
+        // Draw input dialog overlay (on top of everything)
+        self.input_dialog.render(&self.renderer)?;
 
         // Draw context menu overlay
         self.context_menu.render(&self.renderer)?;

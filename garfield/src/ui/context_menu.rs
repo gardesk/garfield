@@ -378,9 +378,8 @@ impl ContextMenu {
         vec![
             MenuItem::action("Default Application", ContextMenuAction::OpenWith("xdg-open".to_string())),
             MenuItem::action("Text Editor", ContextMenuAction::OpenWith("$EDITOR".to_string())),
-            MenuItem::action("File Manager", ContextMenuAction::OpenWith("$FILEMANAGER".to_string())),
             MenuItem::separator(),
-            MenuItem::action("Other Application...", ContextMenuAction::OpenWith(String::new())),
+            MenuItem::action("Other Application...", ContextMenuAction::OpenWith("$CUSTOM".to_string())),
         ]
     }
 

@@ -913,3 +913,359 @@ impl ConflictDialog {
         Ok(())
     }
 }
+
+/// Result of an input dialog.
+#[derive(Debug, Clone)]
+pub enum InputResult {
+    /// User submitted the input.
+    Submitted(String),
+    /// User cancelled.
+    Cancelled,
+}
+
+/// A modal dialog for text input.
+pub struct InputDialog {
+    /// Window bounds (for centering).
+    bounds: Rect,
+    /// Dialog title.
+    title: String,
+    /// Dialog prompt/label.
+    prompt: String,
+    /// Current input value.
+    input: String,
+    /// Cursor position in input.
+    cursor: usize,
+    /// Whether the dialog is visible.
+    visible: bool,
+    /// Currently focused element (0 = input, 1 = ok, 2 = cancel).
+    focused: usize,
+    /// Hovered button.
+    hovered_button: Option<usize>,
+}
+
+impl InputDialog {
+    /// Create a new input dialog.
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            bounds,
+            title: String::new(),
+            prompt: String::new(),
+            input: String::new(),
+            cursor: 0,
+            visible: false,
+            focused: 0,
+            hovered_button: None,
+        }
+    }
+
+    /// Set bounds.
+    pub fn set_bounds(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+
+    /// Show the dialog.
+    pub fn show(&mut self, title: &str, prompt: &str, initial_value: &str) {
+        self.title = title.to_string();
+        self.prompt = prompt.to_string();
+        self.input = initial_value.to_string();
+        self.cursor = self.input.len();
+        self.visible = true;
+        self.focused = 0;
+        self.hovered_button = None;
+    }
+
+    /// Check if visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Hide the dialog.
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+
+    /// Handle key press. Returns Some(result) if dialog should close.
+    pub fn handle_key(&mut self, key: &Key) -> Option<InputResult> {
+        if !self.visible {
+            return None;
+        }
+
+        match key {
+            Key::Escape => {
+                self.hide();
+                Some(InputResult::Cancelled)
+            }
+            Key::Return => {
+                if self.focused == 0 || self.focused == 1 {
+                    let result = self.input.clone();
+                    self.hide();
+                    Some(InputResult::Submitted(result))
+                } else {
+                    self.hide();
+                    Some(InputResult::Cancelled)
+                }
+            }
+            Key::Tab => {
+                self.focused = (self.focused + 1) % 3;
+                None
+            }
+            Key::Char(c) if self.focused == 0 => {
+                self.input.insert(self.cursor, *c);
+                self.cursor += 1;
+                None
+            }
+            Key::Backspace if self.focused == 0 => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.input.remove(self.cursor);
+                }
+                None
+            }
+            Key::Delete if self.focused == 0 => {
+                if self.cursor < self.input.len() {
+                    self.input.remove(self.cursor);
+                }
+                None
+            }
+            Key::Left if self.focused == 0 => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                }
+                None
+            }
+            Key::Right if self.focused == 0 => {
+                if self.cursor < self.input.len() {
+                    self.cursor += 1;
+                }
+                None
+            }
+            Key::Home if self.focused == 0 => {
+                self.cursor = 0;
+                None
+            }
+            Key::End if self.focused == 0 => {
+                self.cursor = self.input.len();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Handle mouse click. Returns Some(result) if dialog should close.
+    pub fn on_click(&mut self, pos: Point) -> Option<InputResult> {
+        if !self.visible {
+            return None;
+        }
+
+        let (ok_rect, cancel_rect) = self.button_rects();
+        let input_rect = self.input_rect();
+
+        if input_rect.contains_point(pos) {
+            self.focused = 0;
+            return None;
+        }
+
+        if ok_rect.contains_point(pos) {
+            let result = self.input.clone();
+            self.hide();
+            return Some(InputResult::Submitted(result));
+        }
+
+        if cancel_rect.contains_point(pos) {
+            self.hide();
+            return Some(InputResult::Cancelled);
+        }
+
+        None
+    }
+
+    /// Handle mouse move.
+    pub fn on_mouse_move(&mut self, pos: Point) {
+        if !self.visible {
+            return;
+        }
+
+        let (ok_rect, cancel_rect) = self.button_rects();
+
+        if ok_rect.contains_point(pos) {
+            self.hovered_button = Some(1);
+        } else if cancel_rect.contains_point(pos) {
+            self.hovered_button = Some(2);
+        } else {
+            self.hovered_button = None;
+        }
+    }
+
+    /// Get the dialog rectangle.
+    fn dialog_rect(&self) -> Rect {
+        let dialog_width = 400.min(self.bounds.width.saturating_sub(40));
+        let dialog_height = 160.min(self.bounds.height.saturating_sub(40));
+        let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
+        let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
+        Rect::new(x, y, dialog_width, dialog_height)
+    }
+
+    /// Get the input field rectangle.
+    fn input_rect(&self) -> Rect {
+        let dialog = self.dialog_rect();
+        let input_width = dialog.width.saturating_sub(40);
+        let input_height = 32;
+        let x = dialog.x + 20;
+        let y = dialog.y + 70;
+        Rect::new(x, y, input_width, input_height)
+    }
+
+    /// Get button rectangles (ok, cancel).
+    fn button_rects(&self) -> (Rect, Rect) {
+        let dialog = self.dialog_rect();
+        let button_width = 80;
+        let button_height = 28;
+        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 16;
+        let button_gap = 16;
+        let total_width = button_width * 2 + button_gap;
+        let start_x = dialog.x + (dialog.width as i32 - total_width as i32) / 2;
+
+        let ok_rect = Rect::new(start_x, button_y, button_width, button_height);
+        let cancel_rect = Rect::new(start_x + button_width as i32 + button_gap as i32, button_y, button_width, button_height);
+
+        (ok_rect, cancel_rect)
+    }
+
+    /// Render the dialog.
+    pub fn render(&self, renderer: &Renderer) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
+
+        let theme = renderer.theme();
+
+        // Dim background overlay
+        renderer.fill_rect(self.bounds, gartk_core::Color::from_u8(0, 0, 0, 180))?;
+
+        let dialog_rect = self.dialog_rect();
+
+        // Dialog background
+        renderer.fill_rounded_rect(dialog_rect, 8.0, theme.background)?;
+        renderer.stroke_rounded_rect(dialog_rect, 8.0, theme.border, 1.0)?;
+
+        // Title
+        let title_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size + 2.0)
+            .color(theme.foreground);
+
+        renderer.text(
+            &self.title,
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 20) as f64,
+            &title_style,
+        )?;
+
+        // Prompt
+        let prompt_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.item_foreground);
+
+        renderer.text(
+            &self.prompt,
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 48) as f64,
+            &prompt_style,
+        )?;
+
+        // Input field
+        let input_rect = self.input_rect();
+        let input_focused = self.focused == 0;
+
+        renderer.fill_rounded_rect(input_rect, 4.0, theme.item_background)?;
+        if input_focused {
+            renderer.stroke_rounded_rect(input_rect, 4.0, theme.selection_background, 2.0)?;
+        } else {
+            renderer.stroke_rounded_rect(input_rect, 4.0, theme.border, 1.0)?;
+        }
+
+        // Input text
+        let input_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.foreground);
+
+        let text_y = input_rect.y + (input_rect.height as i32 - theme.font_size as i32) / 2;
+        renderer.text(
+            &self.input,
+            (input_rect.x + 8) as f64,
+            text_y as f64,
+            &input_style,
+        )?;
+
+        // Cursor (if input is focused)
+        if input_focused {
+            let cursor_text = &self.input[..self.cursor];
+            let cursor_x = if cursor_text.is_empty() {
+                input_rect.x + 8
+            } else {
+                let width = renderer.measure_text(cursor_text, &input_style)
+                    .map(|m| m.width as i32)
+                    .unwrap_or(0);
+                input_rect.x + 8 + width
+            };
+
+            renderer.line(
+                cursor_x as f64,
+                (input_rect.y + 6) as f64,
+                cursor_x as f64,
+                (input_rect.y + input_rect.height as i32 - 6) as f64,
+                theme.foreground,
+                1.0,
+            )?;
+        }
+
+        // Buttons
+        let (ok_rect, cancel_rect) = self.button_rects();
+
+        let button_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.foreground);
+
+        // OK button
+        let ok_focused = self.focused == 1;
+        let ok_hovered = self.hovered_button == Some(1);
+        let ok_bg = if ok_focused || ok_hovered {
+            theme.item_hover_background
+        } else {
+            theme.item_background
+        };
+        renderer.fill_rounded_rect(ok_rect, 4.0, ok_bg)?;
+        if ok_focused {
+            renderer.stroke_rounded_rect(ok_rect, 4.0, theme.foreground, 2.0)?;
+        }
+
+        let ok_text = "OK";
+        let ok_width = renderer.measure_text(ok_text, &button_style)?.width;
+        let ok_x = ok_rect.x + (ok_rect.width as i32 - ok_width as i32) / 2;
+        let button_text_y = ok_rect.y + (ok_rect.height as i32 - theme.font_size as i32) / 2;
+        renderer.text(ok_text, ok_x as f64, button_text_y as f64, &button_style)?;
+
+        // Cancel button
+        let cancel_focused = self.focused == 2;
+        let cancel_hovered = self.hovered_button == Some(2);
+        let cancel_bg = if cancel_focused || cancel_hovered {
+            theme.item_hover_background
+        } else {
+            theme.item_background
+        };
+        renderer.fill_rounded_rect(cancel_rect, 4.0, cancel_bg)?;
+        if cancel_focused {
+            renderer.stroke_rounded_rect(cancel_rect, 4.0, theme.foreground, 2.0)?;
+        }
+
+        let cancel_text = "Cancel";
+        let cancel_width = renderer.measure_text(cancel_text, &button_style)?.width;
+        let cancel_x = cancel_rect.x + (cancel_rect.width as i32 - cancel_width as i32) / 2;
+        renderer.text(cancel_text, cancel_x as f64, button_text_y as f64, &button_style)?;
+
+        Ok(())
+    }
+}
