@@ -583,3 +583,296 @@ impl ProgressDialog {
         Ok(())
     }
 }
+
+/// Result of a conflict dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictAction {
+    /// Replace the existing file.
+    Replace,
+    /// Skip this file.
+    Skip,
+    /// Keep both (auto-rename).
+    KeepBoth,
+    /// Cancel the entire operation.
+    Cancel,
+}
+
+/// A modal dialog for file conflict resolution.
+pub struct ConflictDialog {
+    /// Window bounds (for centering).
+    bounds: Rect,
+    /// Conflicting file name.
+    filename: String,
+    /// Whether the dialog is visible.
+    visible: bool,
+    /// Currently focused button (0-3).
+    focused_button: usize,
+    /// Hovered button.
+    hovered_button: Option<usize>,
+    /// Apply to all remaining conflicts.
+    apply_to_all: bool,
+}
+
+impl ConflictDialog {
+    /// Create a new conflict dialog.
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            bounds,
+            filename: String::new(),
+            visible: false,
+            focused_button: 2, // Default to Keep Both (safest)
+            hovered_button: None,
+            apply_to_all: false,
+        }
+    }
+
+    /// Set bounds.
+    pub fn set_bounds(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+
+    /// Show the dialog for a conflicting file.
+    pub fn show(&mut self, filename: &str) {
+        self.filename = filename.to_string();
+        self.visible = true;
+        self.focused_button = 2; // Default to Keep Both
+        self.hovered_button = None;
+        self.apply_to_all = false;
+    }
+
+    /// Check if visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Check if apply to all is set.
+    pub fn apply_to_all(&self) -> bool {
+        self.apply_to_all
+    }
+
+    /// Hide the dialog.
+    pub fn hide(&mut self) {
+        self.visible = false;
+    }
+
+    /// Handle key press. Returns Some(action) if dialog should close.
+    pub fn handle_key(&mut self, key: &Key) -> Option<ConflictAction> {
+        if !self.visible {
+            return None;
+        }
+
+        match key {
+            Key::Escape => {
+                self.hide();
+                Some(ConflictAction::Cancel)
+            }
+            Key::Return => {
+                self.hide();
+                Some(match self.focused_button {
+                    0 => ConflictAction::Replace,
+                    1 => ConflictAction::Skip,
+                    2 => ConflictAction::KeepBoth,
+                    _ => ConflictAction::Cancel,
+                })
+            }
+            Key::Tab | Key::Right => {
+                self.focused_button = (self.focused_button + 1) % 4;
+                None
+            }
+            Key::Left => {
+                self.focused_button = if self.focused_button == 0 { 3 } else { self.focused_button - 1 };
+                None
+            }
+            Key::Char('a') | Key::Char('A') => {
+                // Toggle apply to all
+                self.apply_to_all = !self.apply_to_all;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Handle mouse move.
+    pub fn on_mouse_move(&mut self, pos: Point) {
+        if !self.visible {
+            return;
+        }
+
+        let buttons = self.button_rects();
+        self.hovered_button = buttons.iter().position(|r| r.contains_point(pos));
+    }
+
+    /// Handle click. Returns Some(action) if a button was clicked.
+    pub fn on_click(&mut self, pos: Point) -> Option<ConflictAction> {
+        if !self.visible {
+            return None;
+        }
+
+        let dialog_rect = self.dialog_rect();
+        if !dialog_rect.contains_point(pos) {
+            self.hide();
+            return Some(ConflictAction::Cancel);
+        }
+
+        // Check checkbox
+        let checkbox_rect = self.checkbox_rect();
+        if checkbox_rect.contains_point(pos) {
+            self.apply_to_all = !self.apply_to_all;
+            return None;
+        }
+
+        let buttons = self.button_rects();
+        for (i, rect) in buttons.iter().enumerate() {
+            if rect.contains_point(pos) {
+                self.hide();
+                return Some(match i {
+                    0 => ConflictAction::Replace,
+                    1 => ConflictAction::Skip,
+                    2 => ConflictAction::KeepBoth,
+                    _ => ConflictAction::Cancel,
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Get the dialog rectangle.
+    fn dialog_rect(&self) -> Rect {
+        let dialog_width = 420.min(self.bounds.width.saturating_sub(40));
+        let dialog_height = 180.min(self.bounds.height.saturating_sub(40));
+        let x = self.bounds.x + (self.bounds.width as i32 - dialog_width as i32) / 2;
+        let y = self.bounds.y + (self.bounds.height as i32 - dialog_height as i32) / 2;
+        Rect::new(x, y, dialog_width, dialog_height)
+    }
+
+    /// Get button rectangles [Replace, Skip, Keep Both, Cancel].
+    fn button_rects(&self) -> [Rect; 4] {
+        let dialog = self.dialog_rect();
+        let button_width = 85;
+        let button_height = 28;
+        let button_y = dialog.y + dialog.height as i32 - button_height as i32 - 16;
+        let button_gap = 8;
+        let total_width = button_width * 4 + button_gap * 3;
+        let start_x = dialog.x + (dialog.width as i32 - total_width as i32) / 2;
+
+        [
+            Rect::new(start_x, button_y, button_width as u32, button_height),
+            Rect::new(start_x + button_width + button_gap, button_y, button_width as u32, button_height),
+            Rect::new(start_x + (button_width + button_gap) * 2, button_y, button_width as u32, button_height),
+            Rect::new(start_x + (button_width + button_gap) * 3, button_y, button_width as u32, button_height),
+        ]
+    }
+
+    /// Get checkbox rectangle.
+    fn checkbox_rect(&self) -> Rect {
+        let dialog = self.dialog_rect();
+        Rect::new(dialog.x + 20, dialog.y + 95, 16, 16)
+    }
+
+    /// Render the dialog.
+    pub fn render(&self, renderer: &Renderer) -> Result<()> {
+        if !self.visible {
+            return Ok(());
+        }
+
+        let theme = renderer.theme();
+
+        // Dim background overlay
+        renderer.fill_rect(self.bounds, gartk_core::Color::from_u8(0, 0, 0, 180))?;
+
+        let dialog_rect = self.dialog_rect();
+
+        // Dialog background
+        renderer.fill_rounded_rect(dialog_rect, 8.0, theme.background)?;
+        renderer.stroke_rounded_rect(dialog_rect, 8.0, theme.border, 1.0)?;
+
+        // Title
+        let title_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size + 2.0)
+            .color(theme.foreground);
+
+        renderer.text(
+            "File Already Exists",
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 20) as f64,
+            &title_style,
+        )?;
+
+        // Message
+        let msg_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.item_foreground);
+
+        let message = format!("\"{}\" already exists in the destination.", self.filename);
+        renderer.text(
+            &message,
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 52) as f64,
+            &msg_style,
+        )?;
+
+        renderer.text(
+            "What would you like to do?",
+            (dialog_rect.x + 20) as f64,
+            (dialog_rect.y + 72) as f64,
+            &msg_style,
+        )?;
+
+        // Checkbox for "Apply to all"
+        let checkbox_rect = self.checkbox_rect();
+        renderer.stroke_rounded_rect(checkbox_rect, 2.0, theme.border, 1.0)?;
+        if self.apply_to_all {
+            // Draw checkmark
+            let cx = checkbox_rect.x as f64 + 3.0;
+            let cy = checkbox_rect.y as f64 + 8.0;
+            renderer.line(cx, cy, cx + 4.0, cy + 4.0, theme.foreground, 2.0)?;
+            renderer.line(cx + 4.0, cy + 4.0, cx + 10.0, cy - 4.0, theme.foreground, 2.0)?;
+        }
+
+        let checkbox_label_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.item_foreground);
+
+        renderer.text(
+            "Apply to all (A)",
+            (checkbox_rect.x + 22) as f64,
+            (checkbox_rect.y) as f64,
+            &checkbox_label_style,
+        )?;
+
+        // Buttons
+        let buttons = self.button_rects();
+        let labels = ["Replace", "Skip", "Keep Both", "Cancel"];
+
+        let button_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.foreground);
+
+        for (i, (rect, label)) in buttons.iter().zip(labels.iter()).enumerate() {
+            let focused = self.focused_button == i;
+            let hovered = self.hovered_button == Some(i);
+
+            let bg = if focused || hovered {
+                theme.item_hover_background
+            } else {
+                theme.item_background
+            };
+            renderer.fill_rounded_rect(*rect, 4.0, bg)?;
+            if focused {
+                renderer.stroke_rounded_rect(*rect, 4.0, theme.foreground, 2.0)?;
+            }
+
+            let text_width = renderer.measure_text(label, &button_style)?.width;
+            let text_x = rect.x + (rect.width as i32 - text_width as i32) / 2;
+            let text_y = rect.y + (rect.height as i32 - (theme.font_size - 1.0) as i32) / 2;
+            renderer.text(label, text_x as f64, text_y as f64, &button_style)?;
+        }
+
+        Ok(())
+    }
+}

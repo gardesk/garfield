@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, DialogResult, HelpModal, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, Surface, TextStyle};
@@ -76,12 +76,30 @@ pub struct App {
     clipboard: Clipboard,
     /// Confirmation dialog.
     confirm_dialog: ConfirmDialog,
+    /// Conflict resolution dialog.
+    conflict_dialog: ConflictDialog,
     /// Progress dialog for long operations.
     progress_dialog: ProgressDialog,
     /// Paths pending delete confirmation.
     pending_delete_paths: Vec<PathBuf>,
     /// Undo/redo stack for file operations.
     undo_stack: UndoStack,
+    /// Pending paste operation with conflicts.
+    pending_paste: Option<PendingPaste>,
+}
+
+/// State for a paste operation with conflicts.
+struct PendingPaste {
+    /// Files to paste.
+    files: Vec<PathBuf>,
+    /// Clipboard operation type.
+    operation: ClipboardOperation,
+    /// Destination directory.
+    dest_dir: PathBuf,
+    /// Files that conflict (exist in destination).
+    conflicts: Vec<PathBuf>,
+    /// Current conflict index being resolved.
+    current_conflict: usize,
 }
 
 impl App {
@@ -174,6 +192,9 @@ impl App {
         // Create confirm dialog (full window bounds)
         let confirm_dialog = ConfirmDialog::new(Rect::new(0, 0, width, height));
 
+        // Create conflict dialog (full window bounds)
+        let conflict_dialog = ConflictDialog::new(Rect::new(0, 0, width, height));
+
         // Create progress dialog (full window bounds)
         let progress_dialog = ProgressDialog::new(Rect::new(0, 0, width, height));
 
@@ -223,9 +244,11 @@ impl App {
             drag_active: false,
             clipboard: Clipboard::new(),
             confirm_dialog,
+            conflict_dialog,
             progress_dialog,
             pending_delete_paths: Vec::new(),
             undo_stack: UndoStack::new(),
+            pending_paste: None,
         };
 
         app.update_status_bar();
@@ -320,6 +343,14 @@ impl App {
         if self.confirm_dialog.is_visible() {
             if let Some(result) = self.confirm_dialog.on_click(pos) {
                 self.handle_dialog_result(result);
+            }
+            return;
+        }
+
+        // Check conflict dialog
+        if self.conflict_dialog.is_visible() {
+            if let Some(action) = self.conflict_dialog.on_click(pos) {
+                self.handle_conflict_action(action);
             }
             return;
         }
@@ -557,6 +588,12 @@ impl App {
             return;
         }
 
+        // Handle conflict dialog hover
+        if self.conflict_dialog.is_visible() {
+            self.conflict_dialog.on_mouse_move(pos);
+            return;
+        }
+
         // Handle sidebar resize in progress
         if self.sidebar_resizing {
             let new_width = (pos.x - self.sidebar.bounds().x).max(0) as u32;
@@ -637,6 +674,14 @@ impl App {
         if self.confirm_dialog.is_visible() {
             if let Some(result) = self.confirm_dialog.handle_key(key) {
                 self.handle_dialog_result(result);
+            }
+            return;
+        }
+
+        // Handle conflict dialog when visible
+        if self.conflict_dialog.is_visible() {
+            if let Some(action) = self.conflict_dialog.handle_key(key) {
+                self.handle_conflict_action(action);
             }
             return;
         }
@@ -1280,6 +1325,40 @@ impl App {
         };
 
         if let Some((files, op)) = self.clipboard.take() {
+            // Check for conflicts first
+            let conflicts: Vec<PathBuf> = files.iter()
+                .filter_map(|f| {
+                    f.file_name().and_then(|name| {
+                        let dest = dest_dir.join(name);
+                        if dest.exists() { Some(f.clone()) } else { None }
+                    })
+                })
+                .collect();
+
+            if !conflicts.is_empty() {
+                // Ring bell to alert user
+                self.bell();
+
+                // Show conflict dialog for the first conflict
+                let first_conflict_name = conflicts[0]
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                self.conflict_dialog.show(&first_conflict_name);
+
+                // Store pending paste state
+                self.pending_paste = Some(PendingPaste {
+                    files,
+                    operation: op,
+                    dest_dir,
+                    conflicts,
+                    current_conflict: 0,
+                });
+                return;
+            }
+
+            // No conflicts - proceed with paste
             let count = files.len();
             let sources = files.clone();
             let result = match op {
@@ -1396,6 +1475,143 @@ impl App {
                 self.pending_delete_paths.clear();
             }
         }
+    }
+
+    /// Handle conflict dialog result.
+    fn handle_conflict_action(&mut self, action: ConflictAction) {
+        let pending = match self.pending_paste.take() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let apply_to_all = self.conflict_dialog.apply_to_all();
+
+        match action {
+            ConflictAction::Cancel => {
+                // Cancel the entire operation
+                self.status_bar.set_status_message("Paste cancelled");
+            }
+            ConflictAction::Skip => {
+                // Skip conflicting files, paste the rest
+                self.complete_paste_with_skip(pending, apply_to_all);
+            }
+            ConflictAction::Replace => {
+                // Replace conflicting files
+                self.complete_paste_with_replace(pending, apply_to_all);
+            }
+            ConflictAction::KeepBoth => {
+                // Auto-rename and paste all
+                self.complete_paste_with_rename(pending, apply_to_all);
+            }
+        }
+    }
+
+    /// Complete paste, skipping conflicts.
+    fn complete_paste_with_skip(&mut self, pending: PendingPaste, _apply_to_all: bool) {
+        let non_conflicting: Vec<_> = pending.files.iter()
+            .filter(|f| !pending.conflicts.contains(f))
+            .cloned()
+            .collect();
+
+        if non_conflicting.is_empty() {
+            self.status_bar.set_status_message("All files skipped (conflicts)");
+            return;
+        }
+
+        let result = match pending.operation {
+            ClipboardOperation::Copy => copy_files(&non_conflicting, &pending.dest_dir),
+            ClipboardOperation::Cut => move_files(&non_conflicting, &pending.dest_dir),
+        };
+
+        let skipped = pending.conflicts.len();
+        if result.success {
+            let action = if pending.operation == ClipboardOperation::Copy { "copied" } else { "moved" };
+            self.status_bar.set_status_message(format!("{} {} (skipped {})", non_conflicting.len(), action, skipped));
+        }
+        self.refresh();
+    }
+
+    /// Complete paste, replacing conflicts.
+    fn complete_paste_with_replace(&mut self, pending: PendingPaste, _apply_to_all: bool) {
+        // Delete conflicting files first
+        for conflict in &pending.conflicts {
+            if let Some(name) = conflict.file_name() {
+                let dest = pending.dest_dir.join(name);
+                let _ = std::fs::remove_file(&dest).or_else(|_| std::fs::remove_dir_all(&dest));
+            }
+        }
+
+        let result = match pending.operation {
+            ClipboardOperation::Copy => copy_files(&pending.files, &pending.dest_dir),
+            ClipboardOperation::Cut => move_files(&pending.files, &pending.dest_dir),
+        };
+
+        if result.success {
+            let action = if pending.operation == ClipboardOperation::Copy { "copied" } else { "moved" };
+            self.status_bar.set_status_message(format!("{} {} (replaced {})", pending.files.len(), action, pending.conflicts.len()));
+        }
+        self.refresh();
+    }
+
+    /// Complete paste, auto-renaming conflicts.
+    fn complete_paste_with_rename(&mut self, pending: PendingPaste, _apply_to_all: bool) {
+        use garfield::core::make_unique_name;
+
+        let mut success_count = 0;
+        let mut sources = Vec::new();
+        let mut destinations = Vec::new();
+
+        for file in &pending.files {
+            if let Some(name) = file.file_name() {
+                let dest = pending.dest_dir.join(name);
+                let final_dest = if dest.exists() {
+                    // Auto-rename
+                    let unique_name = make_unique_name(&pending.dest_dir, name.to_string_lossy().as_ref());
+                    pending.dest_dir.join(unique_name)
+                } else {
+                    dest
+                };
+
+                let result = match pending.operation {
+                    ClipboardOperation::Copy => {
+                        if file.is_dir() {
+                            garfield::core::copy_path(file, &pending.dest_dir)
+                        } else {
+                            std::fs::copy(file, &final_dest).map(|_| final_dest.clone())
+                        }
+                    }
+                    ClipboardOperation::Cut => {
+                        std::fs::rename(file, &final_dest).map(|_| final_dest.clone())
+                    }
+                };
+
+                if let Ok(dest_path) = result {
+                    success_count += 1;
+                    sources.push(file.clone());
+                    destinations.push(dest_path);
+                }
+            }
+        }
+
+        // Record for undo
+        if !destinations.is_empty() {
+            let undo_op = match pending.operation {
+                ClipboardOperation::Copy => FileOperation::Copy { sources, destinations },
+                ClipboardOperation::Cut => FileOperation::Move { sources, destinations },
+            };
+            self.undo_stack.push(undo_op);
+        }
+
+        let action = if pending.operation == ClipboardOperation::Copy { "copied" } else { "moved" };
+        self.status_bar.set_status_message(format!("{} {} (auto-renamed conflicts)", success_count, action));
+        self.refresh();
+    }
+
+    /// Ring the terminal bell.
+    fn bell(&self) {
+        // X11 bell
+        let _ = self.window.connection().inner().bell(0);
+        let _ = self.window.connection().flush();
     }
 
     /// Create a new folder in the current directory.
@@ -1784,6 +2000,7 @@ impl App {
 
         self.help_modal.set_bounds(Rect::new(0, 0, width, height));
         self.confirm_dialog.set_bounds(Rect::new(0, 0, width, height));
+        self.conflict_dialog.set_bounds(Rect::new(0, 0, width, height));
         self.progress_dialog.set_bounds(Rect::new(0, 0, width, height));
     }
 
@@ -1850,6 +2067,9 @@ impl App {
 
         // Draw confirm dialog overlay (on top of everything)
         self.confirm_dialog.render(&self.renderer)?;
+
+        // Draw conflict dialog overlay (on top of everything)
+        self.conflict_dialog.render(&self.renderer)?;
 
         // Draw progress dialog overlay (on top of everything)
         self.progress_dialog.render(&self.renderer)?;

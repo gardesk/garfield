@@ -9,6 +9,7 @@ pub struct HelpModal {
     bounds: Rect,
     visible: bool,
     scroll_offset: i32,
+    content_height: i32,
 }
 
 /// A keybind entry for display.
@@ -52,6 +53,7 @@ const KEYBINDS: &[(&str, &[KeybindEntry])] = &[
         KeybindEntry { key: "Ctrl+A", description: "Select all" },
         KeybindEntry { key: "Ctrl+Click", description: "Toggle selection" },
         KeybindEntry { key: "Shift+Click", description: "Range select" },
+        KeybindEntry { key: "Shift+Up/Down", description: "Extend selection" },
     ]),
     ("File Operations", &[
         KeybindEntry { key: "Ctrl+C", description: "Copy" },
@@ -64,11 +66,16 @@ const KEYBINDS: &[(&str, &[KeybindEntry])] = &[
         KeybindEntry { key: "F2", description: "Rename" },
         KeybindEntry { key: "Ctrl+Shift+N", description: "New folder" },
     ]),
+    ("Bookmarks", &[
+        KeybindEntry { key: "Ctrl+D", description: "Add bookmark" },
+        KeybindEntry { key: "Drag folder", description: "Drop on sidebar" },
+    ]),
     ("Other", &[
         KeybindEntry { key: "Ctrl+L", description: "Edit address" },
         KeybindEntry { key: "F5", description: "Refresh" },
         KeybindEntry { key: "F1", description: "Toggle help" },
-        KeybindEntry { key: "Escape", description: "Close modal" },
+        KeybindEntry { key: "Escape", description: "Close modal/quit" },
+        KeybindEntry { key: "q", description: "Quit" },
     ]),
 ];
 
@@ -79,7 +86,23 @@ impl HelpModal {
             bounds,
             visible: false,
             scroll_offset: 0,
+            content_height: Self::calculate_content_height(),
         }
+    }
+
+    /// Calculate total content height based on keybind entries.
+    fn calculate_content_height() -> i32 {
+        let line_height = 21; // Approximate: font_size * 1.5
+        let section_gap = 8;
+        let section_header_extra = 4;
+
+        let mut height = 0;
+        for (_, entries) in KEYBINDS {
+            height += line_height + section_header_extra; // Section header
+            height += entries.len() as i32 * line_height; // Entries
+            height += section_gap;
+        }
+        height
     }
 
     /// Set bounds.
@@ -127,6 +150,18 @@ impl HelpModal {
         true
     }
 
+    /// Handle mouse wheel scroll.
+    pub fn on_scroll(&mut self, delta: i32) {
+        if !self.visible {
+            return;
+        }
+        if delta > 0 {
+            self.scroll_up();
+        } else if delta < 0 {
+            self.scroll_down();
+        }
+    }
+
     /// Scroll up.
     pub fn scroll_up(&mut self) {
         self.scroll_offset = (self.scroll_offset - 20).max(0);
@@ -134,7 +169,10 @@ impl HelpModal {
 
     /// Scroll down.
     pub fn scroll_down(&mut self) {
-        self.scroll_offset += 20;
+        let modal_rect = self.modal_rect();
+        let visible_height = modal_rect.height as i32 - 60; // Account for title
+        let max_scroll = (self.content_height - visible_height).max(0);
+        self.scroll_offset = (self.scroll_offset + 20).min(max_scroll);
     }
 
     /// Get the modal rectangle (centered in bounds).
@@ -186,6 +224,36 @@ impl HelpModal {
         );
 
         self.render_keybinds(renderer, content_rect, theme)?;
+
+        // Render scroll indicator if content overflows
+        let visible_height = content_rect.height as i32;
+        if self.content_height > visible_height {
+            self.render_scrollbar(renderer, modal_rect, visible_height, theme)?;
+        }
+
+        Ok(())
+    }
+
+    /// Render a scrollbar indicator.
+    fn render_scrollbar(&self, renderer: &Renderer, modal_rect: Rect, visible_height: i32, theme: &Theme) -> Result<()> {
+        let scrollbar_width = 4;
+        let scrollbar_x = modal_rect.x + modal_rect.width as i32 - scrollbar_width - 8;
+        let scrollbar_y = modal_rect.y + 50;
+        let scrollbar_height = visible_height as u32;
+
+        // Track background
+        let track_rect = Rect::new(scrollbar_x, scrollbar_y, scrollbar_width as u32, scrollbar_height);
+        renderer.fill_rounded_rect(track_rect, 2.0, theme.item_background)?;
+
+        // Thumb
+        let thumb_ratio = visible_height as f64 / self.content_height as f64;
+        let thumb_height = ((scrollbar_height as f64 * thumb_ratio) as u32).max(20);
+        let max_scroll = (self.content_height - visible_height).max(1);
+        let scroll_ratio = self.scroll_offset as f64 / max_scroll as f64;
+        let thumb_y = scrollbar_y + ((scrollbar_height - thumb_height) as f64 * scroll_ratio) as i32;
+
+        let thumb_rect = Rect::new(scrollbar_x, thumb_y, scrollbar_width as u32, thumb_height);
+        renderer.fill_rounded_rect(thumb_rect, 2.0, theme.item_foreground)?;
 
         Ok(())
     }
