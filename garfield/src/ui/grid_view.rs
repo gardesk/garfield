@@ -170,6 +170,15 @@ impl GridView {
         self.focused
     }
 
+    /// Set the focused index and select it.
+    pub fn set_focused(&mut self, index: usize) {
+        if index < self.entries.len() {
+            self.focused = index;
+            self.selected.clear();
+            self.selected.insert(index);
+        }
+    }
+
     /// Get all selected entries.
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
         let visible = self.visible_entries();

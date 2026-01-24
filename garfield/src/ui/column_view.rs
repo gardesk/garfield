@@ -215,6 +215,15 @@ impl ColumnView {
         self.current_column.selected
     }
 
+    /// Set the focused index and select it.
+    pub fn set_focused(&mut self, index: usize) {
+        if index < self.current_column.entries.len() {
+            self.current_column.selected = index;
+            self.selected.clear();
+            self.selected.insert(index);
+        }
+    }
+
     /// Get all selected entries.
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
         let visible = self.visible_entries();

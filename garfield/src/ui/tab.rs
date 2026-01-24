@@ -472,6 +472,46 @@ impl Tab {
         });
     }
 
+    /// Start rename with pre-populated text (for paste conflicts).
+    pub fn start_rename_with_text(&mut self, suggested_name: &str) {
+        let index = match self.view_mode {
+            ViewMode::List => self.list_view.focused_index(),
+            ViewMode::Grid => self.grid_view.focused_index(),
+            ViewMode::Columns => self.column_view.focused_index(),
+        };
+
+        // Get the actual current name from the selected entry
+        let original = self.visible_entries()
+            .get(index)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+
+        // Select all text initially
+        let len = suggested_name.len();
+        self.renaming = Some(RenameState {
+            index,
+            original,
+            text: suggested_name.to_string(),
+            cursor: len,
+            selection_start: Some(0),
+        });
+    }
+
+    /// Select a file by name. Returns true if found and selected.
+    pub fn select_by_name(&mut self, name: &str) -> bool {
+        let entries = self.visible_entries();
+        if let Some(index) = entries.iter().position(|e| e.name == name) {
+            match self.view_mode {
+                ViewMode::List => self.list_view.set_focused(index),
+                ViewMode::Grid => self.grid_view.set_focused(index),
+                ViewMode::Columns => self.column_view.set_focused(index),
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Cancel rename operation.
     pub fn cancel_rename(&mut self) {
         self.renaming = None;

@@ -1553,47 +1553,128 @@ impl App {
         self.refresh();
     }
 
-    /// Complete paste, auto-renaming conflicts.
-    fn complete_paste_with_rename(&mut self, pending: PendingPaste, _apply_to_all: bool) {
+    /// Complete paste, auto-renaming conflicts with inline rename prompt.
+    fn complete_paste_with_rename(&mut self, mut pending: PendingPaste, apply_to_all: bool) {
         use garfield::core::make_unique_name;
 
-        let mut success_count = 0;
+        // First, paste all non-conflicting files
+        let non_conflicting: Vec<_> = pending.files.iter()
+            .filter(|f| !pending.conflicts.contains(f))
+            .cloned()
+            .collect();
+
         let mut sources = Vec::new();
         let mut destinations = Vec::new();
 
-        for file in &pending.files {
+        for file in &non_conflicting {
             if let Some(name) = file.file_name() {
                 let dest = pending.dest_dir.join(name);
-                let final_dest = if dest.exists() {
-                    // Auto-rename
-                    let unique_name = make_unique_name(&pending.dest_dir, name.to_string_lossy().as_ref());
-                    pending.dest_dir.join(unique_name)
-                } else {
-                    dest
-                };
-
                 let result = match pending.operation {
                     ClipboardOperation::Copy => {
                         if file.is_dir() {
                             garfield::core::copy_path(file, &pending.dest_dir)
                         } else {
-                            std::fs::copy(file, &final_dest).map(|_| final_dest.clone())
+                            std::fs::copy(file, &dest).map(|_| dest.clone())
                         }
                     }
                     ClipboardOperation::Cut => {
-                        std::fs::rename(file, &final_dest).map(|_| final_dest.clone())
+                        std::fs::rename(file, &dest).map(|_| dest.clone())
                     }
                 };
-
                 if let Ok(dest_path) = result {
-                    success_count += 1;
                     sources.push(file.clone());
                     destinations.push(dest_path);
                 }
             }
         }
 
-        // Record for undo
+        // Now handle the first conflict - paste with suggested name and start rename
+        if let Some(conflict_file) = pending.conflicts.first().cloned() {
+            if let Some(name) = conflict_file.file_name() {
+                let name_str = name.to_string_lossy();
+                let unique_name = make_unique_name(&pending.dest_dir, &name_str);
+                let final_dest = pending.dest_dir.join(&unique_name);
+
+                let result = match pending.operation {
+                    ClipboardOperation::Copy => {
+                        if conflict_file.is_dir() {
+                            garfield::core::copy_path(&conflict_file, &pending.dest_dir)
+                        } else {
+                            std::fs::copy(&conflict_file, &final_dest).map(|_| final_dest.clone())
+                        }
+                    }
+                    ClipboardOperation::Cut => {
+                        std::fs::rename(&conflict_file, &final_dest).map(|_| final_dest.clone())
+                    }
+                };
+
+                if let Ok(dest_path) = result {
+                    sources.push(conflict_file.clone());
+                    destinations.push(dest_path.clone());
+
+                    // Record partial undo
+                    if !destinations.is_empty() {
+                        let undo_op = match pending.operation {
+                            ClipboardOperation::Copy => FileOperation::Copy {
+                                sources: sources.clone(),
+                                destinations: destinations.clone(),
+                            },
+                            ClipboardOperation::Cut => FileOperation::Move {
+                                sources: sources.clone(),
+                                destinations: destinations.clone(),
+                            },
+                        };
+                        self.undo_stack.push(undo_op);
+                    }
+
+                    // Refresh to show the new file
+                    self.refresh();
+
+                    // Select the newly pasted file and start rename
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            // Find and select the file by name
+                            if tab.select_by_name(&unique_name) {
+                                // Start rename with the suggested name pre-populated
+                                tab.start_rename_with_text(&unique_name);
+                            }
+                        }
+                    }
+
+                    // Store remaining conflicts if not apply_to_all
+                    if !apply_to_all && pending.conflicts.len() > 1 {
+                        pending.conflicts.remove(0);
+                        pending.files.retain(|f| pending.conflicts.contains(f));
+                        self.pending_paste = Some(pending);
+                        self.status_bar.set_status_message("Rename file, then Ctrl+V to continue");
+                    } else if apply_to_all && pending.conflicts.len() > 1 {
+                        // Auto-rename remaining conflicts silently
+                        for conflict_file in pending.conflicts.iter().skip(1) {
+                            if let Some(name) = conflict_file.file_name() {
+                                let unique = make_unique_name(&pending.dest_dir, &name.to_string_lossy());
+                                let dest = pending.dest_dir.join(&unique);
+                                let _ = match pending.operation {
+                                    ClipboardOperation::Copy => {
+                                        if conflict_file.is_dir() {
+                                            garfield::core::copy_path(conflict_file, &pending.dest_dir)
+                                        } else {
+                                            std::fs::copy(conflict_file, &dest).map(|_| dest)
+                                        }
+                                    }
+                                    ClipboardOperation::Cut => {
+                                        std::fs::rename(conflict_file, &dest).map(|_| dest)
+                                    }
+                                };
+                            }
+                        }
+                        self.refresh();
+                    }
+                    return;
+                }
+            }
+        }
+
+        // No conflicts or all handled
         if !destinations.is_empty() {
             let undo_op = match pending.operation {
                 ClipboardOperation::Copy => FileOperation::Copy { sources, destinations },
@@ -1602,8 +1683,6 @@ impl App {
             self.undo_stack.push(undo_op);
         }
 
-        let action = if pending.operation == ClipboardOperation::Copy { "copied" } else { "moved" };
-        self.status_bar.set_status_message(format!("{} {} (auto-renamed conflicts)", success_count, action));
         self.refresh();
     }
 
