@@ -255,6 +255,11 @@ impl ListView {
         self.selected = (0..visible_count).collect();
     }
 
+    /// Clear the selection.
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+    }
+
     /// Update bounds.
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;

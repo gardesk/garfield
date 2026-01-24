@@ -281,6 +281,15 @@ impl Tab {
         self.sort_direction
     }
 
+    /// Clear the current selection.
+    pub fn clear_selection(&mut self) {
+        match self.view_mode {
+            ViewMode::List => self.list_view.clear_selection(),
+            ViewMode::Grid => self.grid_view.clear_selection(),
+            ViewMode::Columns => self.column_view.clear_selection(),
+        }
+    }
+
     // === Navigation (keyboard) ===
 
     pub fn select_prev(&mut self) {

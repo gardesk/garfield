@@ -1743,22 +1743,29 @@ impl App {
 
     /// Show the context menu at the given position.
     fn show_context_menu(&mut self, pos: Point) {
-        // Determine context type based on what's under the cursor
-        let (context_type, selected_count) = if let Some(pane) = self.focused_pane() {
-            if let Some(tab) = pane.active_tab() {
-                let selected = tab.selected_paths();
+        // First, check what's under the cursor and potentially select it
+        let (context_type, selected_count) = if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                if let Some(entry) = tab.entry_at_point(pos).cloned() {
+                    // Right-clicked on an item
+                    let selected = tab.selected_paths();
 
-                if let Some(entry) = tab.entry_at_point(pos) {
-                    // Clicked on an item
                     if selected.len() > 1 && selected.contains(&entry.path) {
+                        // Item is part of multi-selection, keep it
                         (ContextType::MultiSelection, selected.len())
-                    } else if entry.is_dir() {
-                        (ContextType::Folder, 1)
                     } else {
-                        (ContextType::File, 1)
+                        // Select this item (replaces current selection)
+                        tab.select_by_name(&entry.name);
+
+                        if entry.is_dir() {
+                            (ContextType::Folder, 1)
+                        } else {
+                            (ContextType::File, 1)
+                        }
                     }
                 } else {
-                    // Clicked on empty space
+                    // Clicked on empty space - clear selection
+                    tab.clear_selection();
                     (ContextType::EmptySpace, 0)
                 }
             } else {
