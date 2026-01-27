@@ -6,7 +6,7 @@ use garfield::core::{
     trash_files, restore_from_trash,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, IconSize, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, TextStyle};
@@ -844,6 +844,12 @@ impl App {
 
     /// Handle mouse scroll. Returns true if a redraw is needed.
     fn handle_scroll(&mut self, pos: Point, _delta_x: i32, delta_y: i32) -> bool {
+        // Help modal captures all scroll events when visible
+        if self.help_modal.is_visible() {
+            self.help_modal.on_scroll(delta_y);
+            return true;
+        }
+
         // Check if scroll is over the content area (not sidebar, toolbar, etc.)
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
@@ -1052,12 +1058,23 @@ impl App {
                     return;
                 }
                 Key::Char('+') | Key::Char('=') => {
-                    // Cycle icon size in grid view
+                    // Increase icon size in grid view
                     if let Some(pane) = self.focused_pane_mut() {
                         if let Some(tab) = pane.active_tab_mut() {
-                            tab.cycle_icon_size();
+                            tab.increase_icon_size();
                         }
                     }
+                    self.sync_toolbar_icon_size();
+                    return;
+                }
+                Key::Char('-') | Key::Char('_') => {
+                    // Decrease icon size in grid view
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            tab.decrease_icon_size();
+                        }
+                    }
+                    self.sync_toolbar_icon_size();
                     return;
                 }
                 Key::Char('t') | Key::Char('T') => {
@@ -1313,6 +1330,8 @@ impl App {
 
         self.sync_tab_bar();
         self.sync_breadcrumb();
+        self.sync_toolbar_view();
+        self.sync_toolbar_icon_size();
         self.update_status_bar();
     }
 
@@ -1399,6 +1418,7 @@ impl App {
             self.sync_tab_bar();
             self.sync_breadcrumb();
             self.sync_toolbar_view();
+            self.sync_toolbar_icon_size();
             self.update_status_bar();
         }
     }
@@ -1409,6 +1429,8 @@ impl App {
             self.focused_pane_id = new_id;
             self.sync_tab_bar();
             self.sync_breadcrumb();
+            self.sync_toolbar_view();
+            self.sync_toolbar_icon_size();
             self.update_status_bar();
         }
     }
@@ -1419,6 +1441,8 @@ impl App {
             self.focused_pane_id = new_id;
             self.sync_tab_bar();
             self.sync_breadcrumb();
+            self.sync_toolbar_view();
+            self.sync_toolbar_icon_size();
             self.update_status_bar();
         }
     }
@@ -1429,6 +1453,8 @@ impl App {
             self.focused_pane_id = new_id;
             self.sync_tab_bar();
             self.sync_breadcrumb();
+            self.sync_toolbar_view();
+            self.sync_toolbar_icon_size();
             self.update_status_bar();
         }
     }
@@ -1439,6 +1465,8 @@ impl App {
             self.focused_pane_id = new_id;
             self.sync_tab_bar();
             self.sync_breadcrumb();
+            self.sync_toolbar_view();
+            self.sync_toolbar_icon_size();
             self.update_status_bar();
         }
     }
@@ -2530,6 +2558,7 @@ impl App {
         }
         self.status_bar.set_view_mode(mode.name());
         self.sync_toolbar_view();
+        self.sync_toolbar_icon_size();
         self.update_status_bar();
     }
 
@@ -2551,7 +2580,20 @@ impl App {
             ToolbarAction::Paste => self.paste(),
             ToolbarAction::Trash => self.trash_selected(),
             ToolbarAction::NewFolder => self.create_new_folder(),
+            ToolbarAction::IconSizeSmall => self.set_icon_size(IconSize::Small),
+            ToolbarAction::IconSizeMedium => self.set_icon_size(IconSize::Medium),
+            ToolbarAction::IconSizeLarge => self.set_icon_size(IconSize::Large),
         }
+    }
+
+    /// Set icon size for the active tab's grid view.
+    fn set_icon_size(&mut self, size: IconSize) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.set_icon_size(size);
+            }
+        }
+        self.sync_toolbar_icon_size();
     }
 
     /// Sync toolbar active view with current tab's view mode.
@@ -2564,6 +2606,20 @@ impl App {
                     ViewMode::Columns => ToolbarAction::ViewColumns,
                 };
                 self.toolbar.set_active_view(action);
+            }
+        }
+    }
+
+    /// Sync toolbar icon size with current tab's grid view icon size.
+    fn sync_toolbar_icon_size(&mut self) {
+        if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                let action = match tab.icon_size() {
+                    IconSize::Small => ToolbarAction::IconSizeSmall,
+                    IconSize::Medium => ToolbarAction::IconSizeMedium,
+                    IconSize::Large => ToolbarAction::IconSizeLarge,
+                };
+                self.toolbar.set_active_icon_size(action);
             }
         }
     }
