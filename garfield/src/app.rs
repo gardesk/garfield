@@ -670,14 +670,12 @@ impl App {
 
         // Handle app picker hover
         if self.app_picker.is_visible() {
-            self.app_picker.on_mouse_move(pos);
-            return true;
+            return self.app_picker.on_mouse_move(pos);
         }
 
         // Handle context menu hover
         if self.context_menu.is_visible() {
-            self.context_menu.on_mouse_move(pos);
-            return true;
+            return self.context_menu.on_mouse_move(pos);
         }
 
         // Handle sidebar resize in progress

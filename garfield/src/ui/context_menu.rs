@@ -486,11 +486,15 @@ impl ContextMenu {
         }
     }
 
-    /// Handle mouse move.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move. Returns true if state changed and redraw is needed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         if !self.visible {
-            return;
+            return false;
         }
+
+        let old_hovered = self.hovered_index;
+        let old_submenu_hovered = self.submenu_hovered_index;
+        let old_open_submenu = self.open_submenu_index;
 
         // Check submenu first if open
         if let Some(ref submenu_bounds) = self.submenu_bounds {
@@ -502,7 +506,7 @@ impl ContextMenu {
                 if let Some(idx) = self.submenu_hovered_index {
                     self.submenu_focused_index = Some(idx);
                 }
-                return;
+                return self.submenu_hovered_index != old_submenu_hovered;
             }
         }
 
@@ -532,7 +536,9 @@ impl ContextMenu {
                         self.close_submenu();
                     }
                 }
-                return;
+                return self.hovered_index != old_hovered
+                    || self.submenu_hovered_index != old_submenu_hovered
+                    || self.open_submenu_index != old_open_submenu;
             }
         }
 
@@ -549,6 +555,10 @@ impl ContextMenu {
                 self.submenu_hover_start = None;
             }
         }
+
+        self.hovered_index != old_hovered
+            || self.submenu_hovered_index != old_submenu_hovered
+            || self.open_submenu_index != old_open_submenu
     }
 
     /// Open a submenu by index.

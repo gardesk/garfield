@@ -505,12 +505,13 @@ impl AppPickerDialog {
         None
     }
 
-    /// Handle mouse move.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move. Returns true if state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         if !self.visible {
-            return;
+            return false;
         }
 
+        let old_hovered = self.hovered_index;
         let dialog_rect = self.dialog_rect();
         let list_y_start = self.list_y_start();
         let list_y_end = list_y_start + (MAX_VISIBLE_ITEMS as i32 * ITEM_HEIGHT as i32);
@@ -530,6 +531,8 @@ impl AppPickerDialog {
         } else {
             self.hovered_index = None;
         }
+
+        self.hovered_index != old_hovered
     }
 
     /// Get the dialog rectangle (centered).
