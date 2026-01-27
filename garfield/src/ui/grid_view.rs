@@ -1,6 +1,6 @@
 //! Grid/icon view for displaying directory contents.
 
-use crate::core::{is_supported_image, EntryType, FileEntry, SortDirection, SortOrder, ThumbnailLoader};
+use crate::core::{is_supported_image, is_pdf, EntryType, FileEntry, SortDirection, SortOrder, ThumbnailLoader};
 use crate::ui::tab::RenameState;
 use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, Surface, TextAlign, TextStyle};
@@ -205,7 +205,7 @@ impl GridView {
         any_loaded
     }
 
-    /// Request thumbnails for visible image files.
+    /// Request thumbnails for visible image and PDF files.
     pub fn request_visible_thumbnails(&mut self) {
         let visible_count = self.visible_count();
         let visible_rows = self.visible_rows();
@@ -216,9 +216,10 @@ impl GridView {
         let paths_to_load: Vec<PathBuf> = (start_index..end_index)
             .filter_map(|i| {
                 self.visible_entry(i).and_then(|entry| {
-                    if is_supported_image(entry.extension().as_deref())
-                        && !self.thumbnail_cache.contains_key(&entry.path)
-                    {
+                    let ext_owned = entry.extension();
+                    let ext = ext_owned.as_deref();
+                    let is_thumbnailable = is_supported_image(ext) || is_pdf(ext);
+                    if is_thumbnailable && !self.thumbnail_cache.contains_key(&entry.path) {
                         Some(entry.path.clone())
                     } else {
                         None
@@ -701,9 +702,11 @@ impl GridView {
                 renderer.stroke_rect(cell, theme.selection_background.with_alpha(0.5), 1.0)?;
             }
 
-            // Check for cached thumbnail first (for image files)
+            // Check for cached thumbnail first (for image and PDF files)
             let mut rendered_thumbnail = false;
-            if is_supported_image(entry.extension().as_deref()) {
+            let ext_owned = entry.extension();
+            let ext = ext_owned.as_deref();
+            if is_supported_image(ext) || is_pdf(ext) {
                 if let Some(surface) = self.thumbnail_cache.get(&entry.path) {
                     // Render the thumbnail centered in the icon area
                     let thumb_w = surface.width();

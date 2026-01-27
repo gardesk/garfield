@@ -91,6 +91,20 @@ impl ThumbnailLoader {
 
     /// Load and scale a thumbnail.
     fn load_thumbnail(path: &PathBuf, size: u32) -> Option<Thumbnail> {
+        // Check if it's a PDF
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+
+        if ext.as_deref() == Some("pdf") {
+            return Self::load_pdf_thumbnail(path, size);
+        }
+
+        Self::load_image_thumbnail(path, size)
+    }
+
+    /// Load thumbnail from an image file.
+    fn load_image_thumbnail(path: &PathBuf, size: u32) -> Option<Thumbnail> {
         use image::GenericImageView;
 
         let img = image::open(path).ok()?;
@@ -115,6 +129,71 @@ impl ThumbnailLoader {
             data: rgba.into_raw(),
             width,
             height,
+        })
+    }
+
+    /// Load thumbnail from a PDF file (render first page).
+    fn load_pdf_thumbnail(path: &PathBuf, size: u32) -> Option<Thumbnail> {
+        use cairo::{Context, Format, ImageSurface};
+        use poppler::Document;
+
+        // Load the PDF document
+        let uri = format!("file://{}", path.display());
+        let doc = Document::from_file(&uri, None).ok()?;
+
+        if doc.n_pages() == 0 {
+            return None;
+        }
+
+        // Get the first page
+        let page = doc.page(0)?;
+        let (page_width, page_height) = page.size();
+
+        // Calculate scale to fit within thumbnail size
+        let scale = (size as f64 / page_width).min(size as f64 / page_height);
+        let width = (page_width * scale) as i32;
+        let height = (page_height * scale) as i32;
+
+        // Create a Cairo surface to render to
+        let mut surface = ImageSurface::create(Format::ARgb32, width, height).ok()?;
+
+        {
+            let ctx = Context::new(&surface).ok()?;
+
+            // Fill with white background
+            ctx.set_source_rgb(1.0, 1.0, 1.0);
+            ctx.paint().ok()?;
+
+            // Scale and render the page
+            ctx.scale(scale, scale);
+            page.render(&ctx);
+        }
+
+        // Get the pixel data
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().ok()?;
+
+        // Convert from ARGB (Cairo) to RGBA
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let offset = y * stride + x * 4;
+                let b = data[offset];
+                let g = data[offset + 1];
+                let r = data[offset + 2];
+                let a = data[offset + 3];
+                rgba.push(r);
+                rgba.push(g);
+                rgba.push(b);
+                rgba.push(a);
+            }
+        }
+
+        Some(Thumbnail {
+            data: rgba,
+            width: width as u32,
+            height: height as u32,
         })
     }
 
