@@ -49,6 +49,12 @@ pub enum ToolbarAction {
     Trash,
     /// Create new folder.
     NewFolder,
+    /// Small icon size (grid view).
+    IconSizeSmall,
+    /// Medium icon size (grid view).
+    IconSizeMedium,
+    /// Large icon size (grid view).
+    IconSizeLarge,
 }
 
 /// A toolbar button.
@@ -65,6 +71,7 @@ pub struct Toolbar {
     buttons: Vec<ToolbarButton>,
     hovered: Option<usize>,
     active_view: ToolbarAction,
+    active_icon_size: ToolbarAction,
     can_go_back: bool,
     can_go_forward: bool,
     has_selection: bool,
@@ -79,6 +86,7 @@ impl Toolbar {
             buttons: Vec::new(),
             hovered: None,
             active_view: ToolbarAction::ViewList,
+            active_icon_size: ToolbarAction::IconSizeMedium,
             can_go_back: false,
             can_go_forward: false,
             has_selection: false,
@@ -97,6 +105,11 @@ impl Toolbar {
     /// Set active view mode.
     pub fn set_active_view(&mut self, action: ToolbarAction) {
         self.active_view = action;
+    }
+
+    /// Set active icon size.
+    pub fn set_active_icon_size(&mut self, action: ToolbarAction) {
+        self.active_icon_size = action;
     }
 
     /// Set navigation state.
@@ -144,6 +157,24 @@ impl Toolbar {
         ];
 
         for (action, tooltip) in view_buttons {
+            self.buttons.push(ToolbarButton {
+                action,
+                bounds: Rect::new(x, y, BUTTON_SIZE, BUTTON_SIZE),
+                tooltip,
+            });
+            x += BUTTON_SIZE as i32 + BUTTON_PADDING as i32;
+        }
+
+        x += GROUP_SEPARATOR as i32;
+
+        // Icon size buttons (for grid view)
+        let size_buttons = [
+            (ToolbarAction::IconSizeSmall, "Small Icons (Ctrl+-)"),
+            (ToolbarAction::IconSizeMedium, "Medium Icons"),
+            (ToolbarAction::IconSizeLarge, "Large Icons (Ctrl++)"),
+        ];
+
+        for (action, tooltip) in size_buttons {
             self.buttons.push(ToolbarButton {
                 action,
                 bounds: Rect::new(x, y, BUTTON_SIZE, BUTTON_SIZE),
@@ -323,6 +354,9 @@ impl Toolbar {
             ToolbarAction::ViewList | ToolbarAction::ViewGrid | ToolbarAction::ViewColumns => {
                 button.action == self.active_view
             }
+            ToolbarAction::IconSizeSmall | ToolbarAction::IconSizeMedium | ToolbarAction::IconSizeLarge => {
+                button.action == self.active_icon_size
+            }
             _ => false,
         };
         let is_disabled = match button.action {
@@ -330,6 +364,10 @@ impl Toolbar {
             ToolbarAction::GoForward => !self.can_go_forward,
             ToolbarAction::Copy | ToolbarAction::Cut | ToolbarAction::Trash => !self.has_selection,
             ToolbarAction::Paste => !self.has_clipboard,
+            // Icon size buttons disabled when not in grid view
+            ToolbarAction::IconSizeSmall | ToolbarAction::IconSizeMedium | ToolbarAction::IconSizeLarge => {
+                self.active_view != ToolbarAction::ViewGrid
+            }
             _ => false,
         };
 
@@ -364,6 +402,9 @@ impl Toolbar {
             ToolbarAction::ViewList => self.draw_list_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::ViewGrid => self.draw_grid_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::ViewColumns => self.draw_columns_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::IconSizeSmall => self.draw_size_small_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::IconSizeMedium => self.draw_size_medium_icon(renderer, cx, cy, icon_color)?,
+            ToolbarAction::IconSizeLarge => self.draw_size_large_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::NewTab => self.draw_new_tab_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::SplitHorizontal => self.draw_split_h_icon(renderer, cx, cy, icon_color)?,
             ToolbarAction::SplitVertical => self.draw_split_v_icon(renderer, cx, cy, icon_color)?,
@@ -440,6 +481,57 @@ impl Toolbar {
             let x = cx - (w * 1.5 + gap) + (i as f64) * (w + gap);
             let rect = Rect::new(x as i32, (cy - h/2.0) as i32, w as u32, h as u32);
             renderer.fill_rect(rect, color)?;
+        }
+        Ok(())
+    }
+
+    fn draw_size_small_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Small grid of tiny squares (4x4)
+        let size = 2.0;
+        let gap = 1.5;
+        let total = 4.0 * size + 3.0 * gap;
+        let start = -total / 2.0;
+        for row in 0..4 {
+            for col in 0..4 {
+                let x = cx + start + (col as f64) * (size + gap);
+                let y = cy + start + (row as f64) * (size + gap);
+                let rect = Rect::new(x as i32, y as i32, size as u32, size as u32);
+                renderer.fill_rect(rect, color)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_size_medium_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Medium grid of squares (3x3)
+        let size = 3.0;
+        let gap = 2.0;
+        let total = 3.0 * size + 2.0 * gap;
+        let start = -total / 2.0;
+        for row in 0..3 {
+            for col in 0..3 {
+                let x = cx + start + (col as f64) * (size + gap);
+                let y = cy + start + (row as f64) * (size + gap);
+                let rect = Rect::new(x as i32, y as i32, size as u32, size as u32);
+                renderer.fill_rect(rect, color)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_size_large_icon(&self, renderer: &Renderer, cx: f64, cy: f64, color: gartk_core::Color) -> Result<()> {
+        // Large grid of squares (2x2)
+        let size = 5.0;
+        let gap = 2.0;
+        let total = 2.0 * size + gap;
+        let start = -total / 2.0;
+        for row in 0..2 {
+            for col in 0..2 {
+                let x = cx + start + (col as f64) * (size + gap);
+                let y = cy + start + (row as f64) * (size + gap);
+                let rect = Rect::new(x as i32, y as i32, size as u32, size as u32);
+                renderer.fill_rect(rect, color)?;
+            }
         }
         Ok(())
     }

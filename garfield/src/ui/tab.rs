@@ -1,7 +1,7 @@
 //! Tab state for a single directory view.
 
 use crate::core::{read_directory, rename_path, sort_entries, FileEntry, History, SortDirection, SortOrder};
-use crate::ui::{ColumnClickResult, ColumnView, GridView, ListView};
+use crate::ui::{ColumnClickResult, ColumnView, GridView, IconSize, ListView};
 use gartk_core::{Key, Modifiers, Point, Rect};
 use gartk_render::Renderer;
 use std::path::PathBuf;
@@ -124,6 +124,26 @@ impl Tab {
     /// Cycle icon size in grid view.
     pub fn cycle_icon_size(&mut self) {
         self.grid_view.cycle_icon_size();
+    }
+
+    /// Get the current icon size for grid view.
+    pub fn icon_size(&self) -> IconSize {
+        self.grid_view.icon_size()
+    }
+
+    /// Set the icon size for grid view.
+    pub fn set_icon_size(&mut self, size: IconSize) {
+        self.grid_view.set_icon_size(size);
+    }
+
+    /// Increase icon size in grid view.
+    pub fn increase_icon_size(&mut self) {
+        self.grid_view.increase_icon_size();
+    }
+
+    /// Decrease icon size in grid view.
+    pub fn decrease_icon_size(&mut self) {
+        self.grid_view.decrease_icon_size();
     }
 
     /// Get history reference.

@@ -48,12 +48,21 @@ impl IconSize {
         }
     }
 
-    /// Cycle to the next size.
+    /// Cycle to the next (larger) size.
     pub fn next(&self) -> Self {
         match self {
             IconSize::Small => IconSize::Medium,
             IconSize::Medium => IconSize::Large,
-            IconSize::Large => IconSize::Small,
+            IconSize::Large => IconSize::Large, // Already at max
+        }
+    }
+
+    /// Cycle to the previous (smaller) size.
+    pub fn prev(&self) -> Self {
+        match self {
+            IconSize::Small => IconSize::Small, // Already at min
+            IconSize::Medium => IconSize::Small,
+            IconSize::Large => IconSize::Medium,
         }
     }
 
@@ -166,6 +175,16 @@ impl GridView {
     /// Cycle to the next icon size.
     pub fn cycle_icon_size(&mut self) {
         self.set_icon_size(self.icon_size.next());
+    }
+
+    /// Increase icon size (to next larger).
+    pub fn increase_icon_size(&mut self) {
+        self.set_icon_size(self.icon_size.next());
+    }
+
+    /// Decrease icon size (to next smaller).
+    pub fn decrease_icon_size(&mut self) {
+        self.set_icon_size(self.icon_size.prev());
     }
 
     /// Set the entries to display.

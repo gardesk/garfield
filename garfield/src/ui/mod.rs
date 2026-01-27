@@ -22,7 +22,7 @@ pub use context_menu::{ContextMenu, ContextMenuAction, ContextType};
 pub use dialog::{ConfirmDialog, ConflictAction, ConflictDialog, DialogResult, InputDialog, InputResult, ProgressDialog, ProgressInfo};
 pub use breadcrumb::Breadcrumb;
 pub use column_view::{ColumnClickResult, ColumnView};
-pub use grid_view::GridView;
+pub use grid_view::{GridView, IconSize};
 pub use help_modal::HelpModal;
 pub use list_view::ListView;
 pub use pane::Pane;
