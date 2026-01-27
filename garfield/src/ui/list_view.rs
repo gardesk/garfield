@@ -410,6 +410,32 @@ impl ListView {
         self.hovered_header != old_hovered
     }
 
+    /// Handle mouse scroll. Returns true if scrolled.
+    pub fn on_scroll(&mut self, delta_y: i32) -> bool {
+        let visible = self.visible_entries();
+        let total_rows = visible.len();
+        let visible_rows = self.visible_rows();
+
+        if total_rows <= visible_rows {
+            return false; // No scrolling needed
+        }
+
+        let max_scroll = total_rows.saturating_sub(visible_rows);
+        let old_offset = self.scroll_offset;
+
+        if delta_y < 0 {
+            // Scroll up
+            let rows = ((-delta_y) as usize / 3).max(1);
+            self.scroll_offset = self.scroll_offset.saturating_sub(rows);
+        } else if delta_y > 0 {
+            // Scroll down
+            let rows = (delta_y as usize / 3).max(1);
+            self.scroll_offset = (self.scroll_offset + rows).min(max_scroll);
+        }
+
+        self.scroll_offset != old_offset
+    }
+
     /// Handle header click for sorting. Returns (new_order, new_direction) if sort changed.
     /// Note: Call divider_at() first to check for resize initiation.
     pub fn on_header_click(&mut self, pos: Point) -> Option<(SortOrder, SortDirection)> {

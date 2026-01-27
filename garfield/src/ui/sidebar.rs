@@ -570,6 +570,12 @@ impl Sidebar {
         self.hovered != old_hovered
     }
 
+    /// Handle mouse scroll. Returns true if scrolled.
+    /// Sidebar doesn't currently support scrolling, but this handles the event.
+    pub fn on_scroll(&mut self, _delta_y: i32) -> bool {
+        false // Sidebar doesn't scroll currently
+    }
+
     /// Handle mouse click. Returns the path to navigate to, if any.
     pub fn on_click(&self, pos: Point) -> Option<PathBuf> {
         if !self.visible || !self.bounds.contains_point(pos) {

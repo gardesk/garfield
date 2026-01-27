@@ -264,6 +264,20 @@ impl Tab {
         self.column_view.set_bounds(bounds);
     }
 
+    /// Get bounds.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    /// Handle mouse scroll. Returns true if scrolled.
+    pub fn on_scroll(&mut self, delta_y: i32) -> bool {
+        match self.view_mode {
+            ViewMode::List => self.list_view.on_scroll(delta_y),
+            ViewMode::Grid => self.grid_view.on_scroll(delta_y),
+            ViewMode::Columns => self.column_view.on_scroll(delta_y),
+        }
+    }
+
     /// Handle sort change from list view header click.
     pub fn set_sort(&mut self, order: SortOrder, direction: SortDirection) {
         self.sort_order = order;
@@ -719,6 +733,34 @@ impl Tab {
     /// Check if preview is currently loading.
     pub fn is_preview_loading(&self) -> bool {
         self.view_mode == ViewMode::Columns && self.column_view.is_preview_loading()
+    }
+
+    /// Take pending image preview request (path, max_width, max_height).
+    pub fn take_pending_image_preview(&mut self) -> Option<(PathBuf, u32, u32)> {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.take_pending_image_preview()
+        } else {
+            None
+        }
+    }
+
+    /// Set loaded image preview for column view.
+    pub fn set_image_preview(&mut self, path: &PathBuf, image: Option<crate::core::ImagePreview>) {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.set_image_preview(path, image);
+        }
+    }
+
+    /// Poll for completed grid view thumbnails. Returns true if any loaded.
+    pub fn poll_thumbnails(&mut self) -> bool {
+        self.grid_view.poll_thumbnails()
+    }
+
+    /// Request thumbnails for visible items in grid view.
+    pub fn request_visible_thumbnails(&mut self) {
+        if self.view_mode == ViewMode::Grid {
+            self.grid_view.request_visible_thumbnails();
+        }
     }
 }
 

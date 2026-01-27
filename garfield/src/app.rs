@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::core::{
-    Clipboard, ClipboardOperation, FileOperation, PreviewLoader, UndoStack,
+    Clipboard, ClipboardOperation, FileOperation, ImagePreviewLoader, PreviewLoader, UndoStack,
     copy_files, move_files, delete_files, create_directory,
     trash_files, restore_from_trash,
 };
@@ -96,6 +96,8 @@ pub struct App {
     pending_paste: Option<PendingPaste>,
     /// Async preview loader for column view.
     preview_loader: PreviewLoader,
+    /// Async image preview loader.
+    image_preview_loader: ImagePreviewLoader,
 }
 
 /// State for a paste operation with conflicts.
@@ -271,6 +273,7 @@ impl App {
             undo_stack: UndoStack::new(),
             pending_paste: None,
             preview_loader: PreviewLoader::new(),
+            image_preview_loader: ImagePreviewLoader::new(),
         };
 
         app.update_status_bar();
@@ -340,10 +343,16 @@ impl App {
                 InputEvent::CloseRequested => {
                     self.should_quit = true;
                 }
+                InputEvent::Scroll(scroll_event) => {
+                    let pos = Point::new(scroll_event.position.x, scroll_event.position.y);
+                    if self.handle_scroll(pos, scroll_event.delta_x, scroll_event.delta_y) {
+                        ev.request_redraw();
+                    }
+                }
                 _ => {}
             }
 
-            // Poll for completed async preview loads
+            // Poll for completed async preview loads (directories)
             if let Some(result) = self.preview_loader.poll() {
                 if let Some(entries) = result.entries {
                     if let Some(pane) = self.focused_pane_mut() {
@@ -355,8 +364,35 @@ impl App {
                 ev.request_redraw();
             }
 
+            // Poll for completed async image preview loads
+            if let Some(result) = self.image_preview_loader.poll() {
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.set_image_preview(&result.path, result.image);
+                    }
+                }
+                ev.request_redraw();
+            }
+
+            // Poll for completed grid view thumbnails
+            if let Some(pane) = self.focused_pane_mut() {
+                if let Some(tab) = pane.active_tab_mut() {
+                    if tab.poll_thumbnails() {
+                        ev.request_redraw();
+                    }
+                }
+            }
+
             // Check for pending preview requests and submit them
             self.process_pending_previews();
+            self.process_pending_image_previews();
+
+            // Request thumbnails for visible grid items
+            if let Some(pane) = self.focused_pane_mut() {
+                if let Some(tab) = pane.active_tab_mut() {
+                    tab.request_visible_thumbnails();
+                }
+            }
 
             if ev.needs_redraw() {
                 let _ = self.render();
@@ -772,6 +808,25 @@ impl App {
         }
 
         needs_redraw
+    }
+
+    /// Handle mouse scroll. Returns true if a redraw is needed.
+    fn handle_scroll(&mut self, pos: Point, _delta_x: i32, delta_y: i32) -> bool {
+        // Check if scroll is over the content area (not sidebar, toolbar, etc.)
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                if tab.bounds().contains_point(pos) {
+                    return tab.on_scroll(delta_y);
+                }
+            }
+        }
+
+        // Check if scroll is over sidebar
+        if self.sidebar.bounds().contains_point(pos) {
+            return self.sidebar.on_scroll(delta_y);
+        }
+
+        false
     }
 
     /// Handle a key press.
@@ -2501,6 +2556,17 @@ impl App {
             if let Some(tab) = pane.active_tab_mut() {
                 if let Some((path, sort_order, sort_direction)) = tab.take_pending_preview() {
                     self.preview_loader.load(path, sort_order, sort_direction);
+                }
+            }
+        }
+    }
+
+    /// Process pending image preview requests.
+    fn process_pending_image_previews(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                if let Some((path, max_width, max_height)) = tab.take_pending_image_preview() {
+                    self.image_preview_loader.load(path, max_width, max_height);
                 }
             }
         }

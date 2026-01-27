@@ -51,5 +51,8 @@ freedesktop_entry_parser = "1.3"
 # Fuzzy matching
 nucleo-matcher = "0.3"
 
+# Image handling
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
+
 # IPC types (shared between crates)
 garfield-ipc = { path = "garfield-ipc" }

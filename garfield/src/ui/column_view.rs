@@ -1,8 +1,8 @@
 //! Miller columns view (like macOS Finder).
 
-use crate::core::{read_directory, sort_entries, EntryType, FileEntry, SortDirection, SortOrder};
+use crate::core::{read_directory, sort_entries, EntryType, FileEntry, ImagePreview, SortDirection, SortOrder, is_supported_image};
 use gartk_core::{Color, Modifiers, Point, Rect};
-use gartk_render::{Renderer, TextStyle};
+use gartk_render::{Renderer, TextStyle, Surface};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -83,6 +83,14 @@ pub struct ColumnView {
     preview_column: Option<Column>,
     /// Path that needs preview loading (set when selection changes to a directory).
     pending_preview_path: Option<PathBuf>,
+    /// Path that needs image preview loading.
+    pending_image_preview_path: Option<PathBuf>,
+    /// Loaded image preview.
+    image_preview: Option<ImagePreview>,
+    /// Path of the loaded image preview (for matching).
+    image_preview_path: Option<PathBuf>,
+    /// Cached Cairo surface for the image preview.
+    image_surface: Option<Surface>,
     /// View bounds.
     bounds: Rect,
     /// Show hidden files.
@@ -111,6 +119,10 @@ impl ColumnView {
             current_column: Column::new(Vec::new(), column_bounds),
             preview_column: None,
             pending_preview_path: None,
+            pending_image_preview_path: None,
+            image_preview: None,
+            image_preview_path: None,
+            image_surface: None,
             bounds,
             show_hidden: false,
             sort_order: SortOrder::Name,
@@ -196,13 +208,40 @@ impl ColumnView {
                     // Clear current preview while loading
                     self.preview_column = None;
                 }
+                // Clear image preview for directories
+                self.pending_image_preview_path = None;
+                self.image_preview = None;
+                self.image_preview_path = None;
+                self.image_surface = None;
             } else {
                 self.pending_preview_path = None;
                 self.preview_column = None;
+
+                // Check if this is an image file that needs preview
+                if is_supported_image(entry.extension().as_deref()) {
+                    let needs_load = self.image_preview_path.as_ref() != Some(&entry.path);
+                    if needs_load {
+                        self.pending_image_preview_path = Some(entry.path.clone());
+                        // Clear current image preview while loading
+                        self.image_preview = None;
+                        self.image_preview_path = None;
+                        self.image_surface = None;
+                    }
+                } else {
+                    // Not an image - clear image preview
+                    self.pending_image_preview_path = None;
+                    self.image_preview = None;
+                    self.image_preview_path = None;
+                    self.image_surface = None;
+                }
             }
         } else {
             self.pending_preview_path = None;
             self.preview_column = None;
+            self.pending_image_preview_path = None;
+            self.image_preview = None;
+            self.image_preview_path = None;
+            self.image_surface = None;
         }
     }
 
@@ -243,6 +282,37 @@ impl ColumnView {
     /// Check if preview is currently loading.
     pub fn is_preview_loading(&self) -> bool {
         self.pending_preview_path.is_some()
+    }
+
+    /// Take pending image preview request (path, max_width, max_height).
+    pub fn take_pending_image_preview(&mut self) -> Option<(PathBuf, u32, u32)> {
+        self.pending_image_preview_path.take().map(|path| {
+            let preview_x = self.current_column.bounds.x + self.current_column.bounds.width as i32;
+            let preview_width = (self.bounds.x + self.bounds.width as i32 - preview_x) as u32;
+            let preview_height = self.bounds.height / 2; // Use half height for image
+            (path, preview_width.saturating_sub(32), preview_height.saturating_sub(32))
+        })
+    }
+
+    /// Set loaded image preview.
+    pub fn set_image_preview(&mut self, path: &PathBuf, image: Option<ImagePreview>) {
+        // Only set if this is still the path we're displaying
+        let visible = self.current_column.visible_entries(self.show_hidden);
+        let selected_matches = visible
+            .get(self.current_column.selected)
+            .map(|e| &e.path == path)
+            .unwrap_or(false);
+
+        if selected_matches {
+            if let Some(ref preview) = image {
+                // Create a Cairo surface from the RGBA data
+                self.image_surface = Surface::from_rgba(&preview.data, preview.width, preview.height).ok();
+            } else {
+                self.image_surface = None;
+            }
+            self.image_preview = image;
+            self.image_preview_path = Some(path.clone());
+        }
     }
 
     /// Get visible entries in current column.
@@ -458,6 +528,31 @@ impl ColumnView {
         }
 
         changed
+    }
+
+    /// Handle mouse scroll. Returns true if scrolled.
+    pub fn on_scroll(&mut self, delta_y: i32) -> bool {
+        // Scroll the current column
+        let visible = self.visible_entries();
+        let total_rows = visible.len();
+        let visible_rows = self.current_column.visible_rows();
+
+        if total_rows <= visible_rows {
+            return false;
+        }
+
+        let max_scroll = total_rows.saturating_sub(visible_rows);
+        let old_offset = self.current_column.scroll_offset;
+
+        if delta_y < 0 {
+            let rows = ((-delta_y) as usize / 3).max(1);
+            self.current_column.scroll_offset = self.current_column.scroll_offset.saturating_sub(rows);
+        } else if delta_y > 0 {
+            let rows = (delta_y as usize / 3).max(1);
+            self.current_column.scroll_offset = (self.current_column.scroll_offset + rows).min(max_scroll);
+        }
+
+        self.current_column.scroll_offset != old_offset
     }
 
     /// Get the entry at the given position (for drag detection).
@@ -745,6 +840,36 @@ impl ColumnView {
             1.0,
         )?;
 
+        let mut y = self.bounds.y + 16;
+        let x = preview_x + 16;
+
+        // Render image preview if available
+        if let Some(ref surface) = self.image_surface {
+            // Center the image in the preview area
+            let img_width = surface.width();
+            let img_height = surface.height();
+            let max_width = preview_width.saturating_sub(32);
+
+            let img_x = preview_x + 16 + (max_width.saturating_sub(img_width) / 2) as i32;
+            let img_y = y;
+
+            // Draw the image using Cairo
+            let ctx = renderer.context()?;
+            ctx.set_source_surface(surface.cairo_surface(), img_x as f64, img_y as f64)?;
+            ctx.paint()?;
+
+            // Move y below the image with padding
+            y += img_height as i32 + 24;
+        } else if is_supported_image(entry.extension().as_deref()) && self.pending_image_preview_path.is_some() {
+            // Show loading indicator for images
+            let loading_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size)
+                .color(theme.item_foreground.with_alpha(0.5));
+            renderer.text("Loading preview...", x as f64, y as f64, &loading_style)?;
+            y += 40;
+        }
+
         let label_style = TextStyle::new()
             .font_family(&theme.font_family)
             .font_size(theme.font_size - 1.0)
@@ -754,9 +879,6 @@ impl ColumnView {
             .font_family(&theme.font_family)
             .font_size(theme.font_size)
             .color(theme.item_foreground);
-
-        let mut y = self.bounds.y + 16;
-        let x = preview_x + 16;
 
         // File name
         renderer.text("Name", x as f64, y as f64, &label_style)?;

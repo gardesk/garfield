@@ -44,3 +44,6 @@ nucleo-matcher.workspace = true
 
 # IPC
 garfield-ipc.workspace = true
+
+# Image handling
+image.workspace = true

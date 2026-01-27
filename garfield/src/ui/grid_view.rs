@@ -1,10 +1,11 @@
 //! Grid/icon view for displaying directory contents.
 
-use crate::core::{EntryType, FileEntry, SortDirection, SortOrder};
+use crate::core::{is_supported_image, EntryType, FileEntry, SortDirection, SortOrder, ThumbnailLoader};
 use crate::ui::tab::RenameState;
 use gartk_core::{Color, Modifiers, Point, Rect};
-use gartk_render::{Renderer, TextAlign, TextStyle};
-use std::collections::HashSet;
+use gartk_render::{Renderer, Surface, TextAlign, TextStyle};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Padding around cells.
@@ -98,6 +99,10 @@ pub struct GridView {
     last_selection_update: Option<Instant>,
     /// Last time we requested a redraw during drag (for frame rate limiting).
     last_drag_render: Option<Instant>,
+    /// Thumbnail loader for image files.
+    thumbnail_loader: ThumbnailLoader,
+    /// Cached thumbnail surfaces.
+    thumbnail_cache: HashMap<PathBuf, Surface>,
 }
 
 impl GridView {
@@ -121,6 +126,8 @@ impl GridView {
             icon_size,
             last_selection_update: None,
             last_drag_render: None,
+            thumbnail_loader: ThumbnailLoader::new(),
+            thumbnail_cache: HashMap::new(),
         }
     }
 
@@ -170,6 +177,60 @@ impl GridView {
         self.selected.insert(0);
         self.selection_anchor = Some(0);
         self.scroll_offset = 0;
+        // Clear thumbnail cache when directory changes
+        self.thumbnail_cache.clear();
+        self.thumbnail_loader.clear_cache();
+    }
+
+    /// Poll for completed thumbnail loads. Returns true if any thumbnails were loaded.
+    pub fn poll_thumbnails(&mut self) -> bool {
+        let loaded = self.thumbnail_loader.poll();
+        let mut any_loaded = false;
+
+        for path in loaded {
+            // Create surface from cached thumbnail (borrow ends after and_then)
+            let surface_opt = self.thumbnail_loader
+                .get_cached(&path)
+                .and_then(|thumbnail| {
+                    Surface::from_rgba(&thumbnail.data, thumbnail.width, thumbnail.height).ok()
+                });
+
+            // Now insert (no borrow of thumbnail_loader active)
+            if let Some(surface) = surface_opt {
+                self.thumbnail_cache.insert(path, surface);
+                any_loaded = true;
+            }
+        }
+
+        any_loaded
+    }
+
+    /// Request thumbnails for visible image files.
+    pub fn request_visible_thumbnails(&mut self) {
+        let visible_count = self.visible_count();
+        let visible_rows = self.visible_rows();
+        let start_index = self.scroll_offset * self.columns;
+        let end_index = (start_index + visible_rows * self.columns).min(visible_count);
+
+        // Collect paths to load (immutable borrow of entries)
+        let paths_to_load: Vec<PathBuf> = (start_index..end_index)
+            .filter_map(|i| {
+                self.visible_entry(i).and_then(|entry| {
+                    if is_supported_image(entry.extension().as_deref())
+                        && !self.thumbnail_cache.contains_key(&entry.path)
+                    {
+                        Some(entry.path.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        // Now request loading (mutable borrow of thumbnail_loader)
+        for path in paths_to_load {
+            self.thumbnail_loader.get_or_load(&path);
+        }
     }
 
     /// Get visible entries (respecting hidden filter).
@@ -427,6 +488,33 @@ impl GridView {
         self.hovered != old_hovered
     }
 
+    /// Handle mouse scroll. Returns true if scrolled.
+    pub fn on_scroll(&mut self, delta_y: i32) -> bool {
+        let visible_count = self.visible_count();
+        let total_rows = (visible_count + self.columns - 1) / self.columns;
+        let visible_rows = self.visible_rows();
+
+        if total_rows <= visible_rows {
+            return false; // No scrolling needed
+        }
+
+        let max_scroll = total_rows.saturating_sub(visible_rows);
+        let old_offset = self.scroll_offset;
+
+        // Scroll by number of rows (negative delta = scroll up)
+        if delta_y < 0 {
+            // Scroll up
+            let rows = ((-delta_y) as usize / 3).max(1);
+            self.scroll_offset = self.scroll_offset.saturating_sub(rows);
+        } else if delta_y > 0 {
+            // Scroll down
+            let rows = (delta_y as usize / 3).max(1);
+            self.scroll_offset = (self.scroll_offset + rows).min(max_scroll);
+        }
+
+        self.scroll_offset != old_offset
+    }
+
     /// Start rubber band selection.
     pub fn start_drag(&mut self, pos: Point) {
         self.drag_start = Some(pos);
@@ -613,32 +701,53 @@ impl GridView {
                 renderer.stroke_rect(cell, theme.selection_background.with_alpha(0.5), 1.0)?;
             }
 
-            // Icon (placeholder using text)
-            let icon = match entry.entry_type {
-                EntryType::Directory => "\u{1F4C1}",  // folder emoji
-                EntryType::Symlink => "\u{1F517}",    // link emoji
-                _ => Self::file_icon_for_extension(entry.extension().as_deref()),
-            };
+            // Check for cached thumbnail first (for image files)
+            let mut rendered_thumbnail = false;
+            if is_supported_image(entry.extension().as_deref()) {
+                if let Some(surface) = self.thumbnail_cache.get(&entry.path) {
+                    // Render the thumbnail centered in the icon area
+                    let thumb_w = surface.width();
+                    let thumb_h = surface.height();
+                    let icon_area_size = icon_size_px;
+                    let thumb_x = cell.x + (cell.width as i32 - thumb_w as i32) / 2;
+                    let thumb_y = cell.y + 8 + (icon_area_size as i32 - thumb_h as i32) / 2;
 
-            let icon_color = if is_selected {
-                theme.selection_foreground
-            } else {
-                match entry.entry_type {
-                    EntryType::Directory => dir_color,
-                    EntryType::Symlink => symlink_color,
-                    _ => theme.item_foreground,
+                    let ctx = renderer.context()?;
+                    ctx.set_source_surface(surface.cairo_surface(), thumb_x as f64, thumb_y as f64)?;
+                    ctx.paint()?;
+                    rendered_thumbnail = true;
                 }
-            };
+                // Thumbnails are requested via request_visible_thumbnails() called before render
+            }
 
-            let icon_style = TextStyle::new()
-                .font_family(&theme.font_family)
-                .font_size(icon_font_size)
-                .color(icon_color);
+            // Fall back to emoji icon if no thumbnail
+            if !rendered_thumbnail {
+                let icon = match entry.entry_type {
+                    EntryType::Directory => "\u{1F4C1}",  // folder emoji
+                    EntryType::Symlink => "\u{1F517}",    // link emoji
+                    _ => Self::file_icon_for_extension(entry.extension().as_deref()),
+                };
 
-            // Center icon horizontally in cell
-            let icon_center_x = cell.x + cell.width as i32 / 2;
-            let icon_center_y = cell.y + 10 + (icon_font_size / 2.0) as i32;
-            renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
+                let icon_color = if is_selected {
+                    theme.selection_foreground
+                } else {
+                    match entry.entry_type {
+                        EntryType::Directory => dir_color,
+                        EntryType::Symlink => symlink_color,
+                        _ => theme.item_foreground,
+                    }
+                };
+
+                let icon_style = TextStyle::new()
+                    .font_family(&theme.font_family)
+                    .font_size(icon_font_size)
+                    .color(icon_color);
+
+                // Center icon horizontally in cell
+                let icon_center_x = cell.x + cell.width as i32 / 2;
+                let icon_center_y = cell.y + 10 + (icon_font_size / 2.0) as i32;
+                renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
+            }
 
             // Rectangle for the text area below the icon
             let text_rect = Rect::new(
