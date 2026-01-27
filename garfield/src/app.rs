@@ -9,7 +9,7 @@ use garfield::ui::pane::SplitDirection;
 use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
-use gartk_render::{Renderer, Surface, TextStyle};
+use gartk_render::{Renderer, TextStyle};
 use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -567,6 +567,8 @@ impl App {
                     tab.on_click(pos, modifiers);
                 }
             }
+            // Update status bar with new selection
+            self.update_status_bar();
 
             // Capture drag source from entry at click position (for bookmark drag)
             let entry_at_click = self.focused_pane()
@@ -632,6 +634,8 @@ impl App {
         self.pane_resize_path = None;
         self.sidebar_resizing = false;
 
+        let was_dragging = self.focused_pane().map(|p| p.is_dragging()).unwrap_or(false);
+
         if let Some(pane) = self.focused_pane_mut() {
             if pane.is_resizing() {
                 pane.stop_resize();
@@ -639,6 +643,11 @@ impl App {
             if pane.is_dragging() {
                 pane.stop_drag();
             }
+        }
+
+        // Update status bar after any mouse release (ensures rubber band selection is reflected)
+        if was_dragging {
+            self.update_status_bar();
         }
     }
 
@@ -745,10 +754,21 @@ impl App {
         needs_redraw |= self.sidebar.on_mouse_move(pos);
         needs_redraw |= self.tab_bar.on_mouse_move(pos);
 
+        let mut is_dragging = false;
+        let mut selection_count = 0;
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 needs_redraw |= tab.on_mouse_move(pos);
+                is_dragging = tab.is_dragging();
+                if is_dragging {
+                    selection_count = tab.selection_count();
+                }
             }
+        }
+
+        // Update status bar selection count if rubber band is active (lightweight update)
+        if is_dragging {
+            self.status_bar.update_selection_count(selection_count);
         }
 
         needs_redraw
@@ -2380,6 +2400,8 @@ impl App {
                     });
                 }
                 self.status_bar.set_status_message(format!("Renamed to '{}'", new_name));
+                // Update status bar with new entry count
+                self.update_status_bar();
             }
             Some(Err(msg)) => {
                 self.status_bar.set_status_message(format!("Rename failed: {}", msg));
@@ -2705,33 +2727,28 @@ impl App {
     /// Blit the rendered surface to the window.
     fn blit_surface(&mut self) -> Result<()> {
         let size = self.renderer.size();
-        let conn = self.window.connection();
+        let window_id = self.window.id();
+        let depth = self.window.depth();
+        let gc = self.gc;
+        let conn = self.window.connection().clone();
 
-        let ctx = self.renderer.context()?;
-        ctx.target().flush();
+        // Access surface data directly without copying, blit to X11
+        self.renderer.surface_mut().with_data(|data| {
+            let _ = conn.inner().put_image(
+                ImageFormat::Z_PIXMAP,
+                window_id,
+                gc,
+                size.width as u16,
+                size.height as u16,
+                0,
+                0,
+                0,
+                depth,
+                data,
+            );
+        })?;
 
-        let mut temp_surface = Surface::new(size.width, size.height)?;
-        let temp_ctx = temp_surface.context()?;
-        temp_ctx.set_source_surface(self.renderer.surface().cairo_surface(), 0.0, 0.0)?;
-        temp_ctx.paint()?;
-        drop(temp_ctx);
-
-        let data = temp_surface.data()?;
-
-        conn.inner().put_image(
-            ImageFormat::Z_PIXMAP,
-            self.window.id(),
-            self.gc,
-            size.width as u16,
-            size.height as u16,
-            0,
-            0,
-            0,
-            self.window.depth(),
-            &data,
-        )?;
-
-        conn.flush()?;
+        self.window.connection().flush()?;
 
         Ok(())
     }

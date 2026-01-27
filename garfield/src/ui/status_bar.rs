@@ -52,6 +52,11 @@ impl StatusBar {
         self.selected_size = selected_size;
     }
 
+    /// Light-weight update of just the selection count (for drag operations).
+    pub fn update_selection_count(&mut self, selected_count: usize) {
+        self.selected_count = selected_count;
+    }
+
     /// Set the current view mode name.
     pub fn set_view_mode(&mut self, mode: &str) {
         self.view_mode = mode.to_string();

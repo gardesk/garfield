@@ -5,6 +5,7 @@ use crate::ui::tab::RenameState;
 use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, TextAlign, TextStyle};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 /// Padding around cells.
 pub const CELL_PADDING: u32 = 8;
@@ -69,6 +70,8 @@ impl IconSize {
 pub struct GridView {
     /// Entries to display.
     entries: Vec<FileEntry>,
+    /// Cached indices of visible entries (respecting hidden filter).
+    visible_indices: Vec<usize>,
     /// Currently focused index (for keyboard nav).
     focused: usize,
     /// Selected indices (for multi-select).
@@ -91,6 +94,10 @@ pub struct GridView {
     drag_current: Option<Point>,
     /// Icon size setting.
     icon_size: IconSize,
+    /// Last time rubber band selection was updated (for throttling).
+    last_selection_update: Option<Instant>,
+    /// Last time we requested a redraw during drag (for frame rate limiting).
+    last_drag_render: Option<Instant>,
 }
 
 impl GridView {
@@ -100,6 +107,7 @@ impl GridView {
         let columns = Self::calculate_columns_for_size(bounds.width, icon_size);
         Self {
             entries: Vec::new(),
+            visible_indices: Vec::new(),
             focused: 0,
             selected: HashSet::new(),
             selection_anchor: None,
@@ -111,7 +119,19 @@ impl GridView {
             drag_start: None,
             drag_current: None,
             icon_size,
+            last_selection_update: None,
+            last_drag_render: None,
         }
+    }
+
+    /// Rebuild the visible indices cache.
+    fn rebuild_visible_cache(&mut self) {
+        self.visible_indices = self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| self.show_hidden || !e.hidden)
+            .map(|(i, _)| i)
+            .collect();
     }
 
     /// Calculate number of columns that fit in the given width for a specific icon size.
@@ -144,6 +164,7 @@ impl GridView {
     /// Set the entries to display.
     pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
         self.entries = entries;
+        self.rebuild_visible_cache();
         self.focused = 0;
         self.selected.clear();
         self.selected.insert(0);
@@ -152,17 +173,29 @@ impl GridView {
     }
 
     /// Get visible entries (respecting hidden filter).
+    /// Uses cached indices for efficiency.
     pub fn visible_entries(&self) -> Vec<&FileEntry> {
-        self.entries
+        self.visible_indices
             .iter()
-            .filter(|e| self.show_hidden || !e.hidden)
+            .filter_map(|&i| self.entries.get(i))
             .collect()
+    }
+
+    /// Get visible entry count without allocation.
+    #[inline]
+    pub fn visible_count(&self) -> usize {
+        self.visible_indices.len()
+    }
+
+    /// Get entry at visible index without allocation.
+    #[inline]
+    pub fn visible_entry(&self, visible_idx: usize) -> Option<&FileEntry> {
+        self.visible_indices.get(visible_idx).and_then(|&i| self.entries.get(i))
     }
 
     /// Get the currently focused entry.
     pub fn selected_entry(&self) -> Option<&FileEntry> {
-        let visible = self.visible_entries();
-        visible.get(self.focused).copied()
+        self.visible_entry(self.focused)
     }
 
     /// Get the focused index.
@@ -181,10 +214,9 @@ impl GridView {
 
     /// Get all selected entries.
     pub fn selected_entries(&self) -> Vec<&FileEntry> {
-        let visible = self.visible_entries();
         self.selected
             .iter()
-            .filter_map(|&i| visible.get(i).copied())
+            .filter_map(|&i| self.visible_entry(i))
             .collect()
     }
 
@@ -207,7 +239,8 @@ impl GridView {
     /// Toggle hidden files visibility.
     pub fn toggle_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
-        let visible_count = self.visible_entries().len();
+        self.rebuild_visible_cache();
+        let visible_count = self.visible_count();
         if self.focused >= visible_count && visible_count > 0 {
             self.focused = visible_count - 1;
         }
@@ -229,7 +262,7 @@ impl GridView {
 
     /// Move selection down (to next row).
     pub fn select_next(&mut self) {
-        let visible_count = self.visible_entries().len();
+        let visible_count = self.visible_count();
         if self.focused + self.columns < visible_count {
             self.focused += self.columns;
         } else if self.focused < visible_count.saturating_sub(1) {
@@ -248,7 +281,7 @@ impl GridView {
 
     /// Move selection right.
     pub fn select_right(&mut self) {
-        let visible_count = self.visible_entries().len();
+        let visible_count = self.visible_count();
         if self.focused + 1 < visible_count {
             self.focused += 1;
             self.update_single_selection();
@@ -283,7 +316,7 @@ impl GridView {
 
     /// Jump to last entry.
     pub fn select_last(&mut self) {
-        let visible_count = self.visible_entries().len();
+        let visible_count = self.visible_count();
         if visible_count > 0 {
             self.focused = visible_count - 1;
             self.update_single_selection();
@@ -303,7 +336,7 @@ impl GridView {
 
     /// Page down.
     pub fn page_down(&mut self) {
-        let visible_count = self.visible_entries().len();
+        let visible_count = self.visible_count();
         let page_size = self.visible_rows() * self.columns;
         self.focused = (self.focused + page_size).min(visible_count.saturating_sub(1));
         self.update_single_selection();
@@ -311,7 +344,7 @@ impl GridView {
 
     /// Select all entries (Ctrl+A).
     pub fn select_all(&mut self) {
-        let visible_count = self.visible_entries().len();
+        let visible_count = self.visible_count();
         self.selected = (0..visible_count).collect();
     }
 
@@ -344,8 +377,32 @@ impl GridView {
         // Handle rubber band drag
         if self.drag_start.is_some() {
             self.drag_current = Some(pos);
-            self.update_rubber_band_selection();
-            return true; // Rubber band always needs redraw
+
+            // Throttle both selection updates AND render requests to ~60fps
+            let should_update = match self.last_selection_update {
+                Some(last) => last.elapsed() >= Duration::from_millis(16),
+                None => true,
+            };
+
+            if should_update {
+                self.update_rubber_band_selection();
+                self.last_selection_update = Some(Instant::now());
+                self.last_drag_render = Some(Instant::now());
+                return true; // Request redraw at throttled rate
+            }
+
+            // Also limit render requests independently (in case selection didn't change)
+            let should_render = match self.last_drag_render {
+                Some(last) => last.elapsed() >= Duration::from_millis(16),
+                None => true,
+            };
+
+            if should_render {
+                self.last_drag_render = Some(Instant::now());
+                return true;
+            }
+
+            return false; // Skip redraw, we're within throttle window
         }
 
         let old_hovered = self.hovered;
@@ -355,9 +412,9 @@ impl GridView {
             return self.hovered != old_hovered;
         }
 
-        let visible = self.visible_entries();
+        let visible_count = self.visible_count();
         let start_index = self.scroll_offset * self.columns;
-        let end_index = (start_index + self.visible_rows() * self.columns).min(visible.len());
+        let end_index = (start_index + self.visible_rows() * self.columns).min(visible_count);
 
         self.hovered = None;
         for i in start_index..end_index {
@@ -375,6 +432,8 @@ impl GridView {
         self.drag_start = Some(pos);
         self.drag_current = Some(pos);
         self.selected.clear();
+        self.last_selection_update = None;
+        self.last_drag_render = None;
     }
 
     /// Check if rubber band drag is active.
@@ -384,8 +443,12 @@ impl GridView {
 
     /// Stop rubber band selection.
     pub fn stop_drag(&mut self) {
+        // Final selection update before clearing drag state
+        self.update_rubber_band_selection();
         self.drag_start = None;
         self.drag_current = None;
+        self.last_selection_update = None;
+        self.last_drag_render = None;
     }
 
     /// Get the rubber band rectangle (if dragging).
@@ -404,9 +467,9 @@ impl GridView {
     /// Update selection based on rubber band rectangle.
     fn update_rubber_band_selection(&mut self) {
         if let Some(band) = self.rubber_band_rect() {
-            let visible = self.visible_entries();
+            let visible_count = self.visible_count();
             let start_index = self.scroll_offset * self.columns;
-            let end_index = (start_index + self.visible_rows() * self.columns).min(visible.len());
+            let end_index = (start_index + self.visible_rows() * self.columns).min(visible_count);
 
             self.selected.clear();
             for i in start_index..end_index {
@@ -424,13 +487,13 @@ impl GridView {
             return None;
         }
 
-        let visible = self.visible_entries();
+        let visible_count = self.visible_count();
         let start_index = self.scroll_offset * self.columns;
-        let end_index = (start_index + self.visible_rows() * self.columns).min(visible.len());
+        let end_index = (start_index + self.visible_rows() * self.columns).min(visible_count);
 
         for i in start_index..end_index {
             if self.cell_bounds(i).contains_point(pos) {
-                return visible.get(i).copied();
+                return self.visible_entry(i);
             }
         }
 
@@ -443,9 +506,9 @@ impl GridView {
             return None;
         }
 
-        let visible = self.visible_entries();
+        let visible_count = self.visible_count();
         let start_index = self.scroll_offset * self.columns;
-        let end_index = (start_index + self.visible_rows() * self.columns).min(visible.len());
+        let end_index = (start_index + self.visible_rows() * self.columns).min(visible_count);
 
         for i in start_index..end_index {
             if self.cell_bounds(i).contains_point(pos) {
@@ -499,14 +562,30 @@ impl GridView {
     /// Render the grid view.
     pub fn render(&self, renderer: &Renderer, rename_state: Option<&RenameState>) -> anyhow::Result<()> {
         let theme = renderer.theme();
-        let visible = self.visible_entries();
+        let visible_count = self.visible_count();
         let visible_rows = self.visible_rows();
 
         let start_index = self.scroll_offset * self.columns;
-        let end_index = (start_index + visible_rows * self.columns).min(visible.len());
+        let end_index = (start_index + visible_rows * self.columns).min(visible_count);
+
+        // Pre-compute colors to avoid parsing hex strings in the loop
+        let dir_color = Color::new(0.36, 0.62, 0.85, 1.0); // #5c9fd8
+        let symlink_color = Color::new(0.78, 0.47, 0.87, 1.0); // #c678dd
+
+        // Pre-compute icon font size
+        let icon_font_size = match self.icon_size {
+            IconSize::Small => 24.0,
+            IconSize::Medium => 32.0,
+            IconSize::Large => 48.0,
+        };
+        let name_font_size = self.icon_size.font_size();
+        let icon_size_px = self.icon_size.icon_size();
 
         for i in start_index..end_index {
-            let entry = visible[i];
+            let entry = match self.visible_entry(i) {
+                Some(e) => e,
+                None => continue,
+            };
             let cell = self.cell_bounds(i);
 
             // Skip cells outside visible area
@@ -545,18 +624,12 @@ impl GridView {
                 theme.selection_foreground
             } else {
                 match entry.entry_type {
-                    EntryType::Directory => Color::from_hex("#5c9fd8").unwrap_or(theme.item_foreground),
-                    EntryType::Symlink => Color::from_hex("#c678dd").unwrap_or(theme.item_foreground),
+                    EntryType::Directory => dir_color,
+                    EntryType::Symlink => symlink_color,
                     _ => theme.item_foreground,
                 }
             };
 
-            // Scale icon font size based on icon size setting
-            let icon_font_size = match self.icon_size {
-                IconSize::Small => 24.0,
-                IconSize::Medium => 32.0,
-                IconSize::Large => 48.0,
-            };
             let icon_style = TextStyle::new()
                 .font_family(&theme.font_family)
                 .font_size(icon_font_size)
@@ -568,12 +641,11 @@ impl GridView {
             renderer.text_centered(icon, Point::new(icon_center_x, icon_center_y), &icon_style)?;
 
             // Rectangle for the text area below the icon
-            let icon_size = self.icon_size.icon_size();
             let text_rect = Rect::new(
                 cell.x + 4,
-                cell.y + icon_size as i32 + 8,
+                cell.y + icon_size_px as i32 + 8,
                 cell.width - 8,
-                cell.height - icon_size - 12,
+                cell.height - icon_size_px - 12,
             );
 
             if is_renaming {
@@ -591,25 +663,22 @@ impl GridView {
                     theme.item_foreground
                 };
 
-                let name_font_size = self.icon_size.font_size();
+                // Use Pango CENTER alignment for proper text centering
                 let name_style = TextStyle::new()
                     .font_family(&theme.font_family)
                     .font_size(name_font_size)
-                    .color(name_color);
-
-                // Use Pango CENTER alignment for proper text centering (like Dolphin/Nautilus)
-                let name_style = name_style.clone()
+                    .color(name_color)
                     .align(TextAlign::Center)
                     .ellipsize(true)
                     .max_width((cell.width - 8) as i32);
 
-                // Add "@" suffix for symlinks
-                let display_name = if entry.is_symlink {
-                    format!("{}@", entry.name)
+                // Render text - avoid allocation for non-symlinks
+                if entry.is_symlink {
+                    let display_name = format!("{}@", entry.name);
+                    renderer.text_in_rect(&display_name, text_rect, &name_style)?;
                 } else {
-                    entry.name.clone()
-                };
-                renderer.text_in_rect(&display_name, text_rect, &name_style)?;
+                    renderer.text_in_rect(&entry.name, text_rect, &name_style)?;
+                }
             }
         }
 

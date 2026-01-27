@@ -578,9 +578,32 @@ impl Tab {
         match rename_path(&entry_path, new_name) {
             Ok(new_path) => {
                 self.refresh();
+                // Select the renamed file
+                self.select_by_path(&new_path);
                 Ok((entry_path, new_path, new_name.to_string()))
             }
             Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Select a file by its path.
+    fn select_by_path(&mut self, path: &std::path::Path) {
+        let visible = self.visible_entries();
+        for (i, entry) in visible.iter().enumerate() {
+            if entry.path == path {
+                match self.view_mode {
+                    ViewMode::List => {
+                        self.list_view.set_focused(i);
+                    }
+                    ViewMode::Grid => {
+                        self.grid_view.set_focused(i);
+                    }
+                    ViewMode::Columns => {
+                        self.column_view.set_focused(i);
+                    }
+                }
+                return;
+            }
         }
     }
 
