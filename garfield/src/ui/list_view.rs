@@ -9,11 +9,62 @@ use std::collections::HashSet;
 /// Height of each row in the list view.
 pub const ROW_HEIGHT: u32 = 28;
 
+/// Truncate text with ellipsis to fit within a given width.
+fn truncate_text(renderer: &Renderer, text: &str, style: &TextStyle, max_width: u32) -> String {
+    if max_width < 20 {
+        return "...".to_string();
+    }
+
+    // First check if text already fits
+    if let Ok(size) = renderer.measure_text(text, style) {
+        if size.width <= max_width {
+            return text.to_string();
+        }
+    }
+
+    // Binary search for the right truncation point
+    let ellipsis = "...";
+    let chars: Vec<char> = text.chars().collect();
+    let mut low = 0;
+    let mut high = chars.len();
+
+    while low < high {
+        let mid = (low + high + 1) / 2;
+        let truncated: String = chars[..mid].iter().collect();
+        let with_ellipsis = format!("{}{}", truncated, ellipsis);
+
+        if let Ok(size) = renderer.measure_text(&with_ellipsis, style) {
+            if size.width <= max_width {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    if low == 0 {
+        ellipsis.to_string()
+    } else if low == chars.len() {
+        text.to_string()
+    } else {
+        let truncated: String = chars[..low].iter().collect();
+        format!("{}{}", truncated, ellipsis)
+    }
+}
+
 /// Height of the header row.
 pub const HEADER_HEIGHT: u32 = 28;
 
 /// Minimum column width.
 const MIN_COLUMN_WIDTH: u32 = 60;
+
+/// Fixed width for size column.
+const SIZE_COLUMN_WIDTH: u32 = 100;
+
+/// Fixed width for modified column.
+const MODIFIED_COLUMN_WIDTH: u32 = 140;
 
 /// Column identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,10 +116,9 @@ pub struct ListView {
 impl ListView {
     /// Create a new list view.
     pub fn new(bounds: Rect) -> Self {
-        // Initial column widths: 50% for name, 100px size, rest for date
-        let name_width = (bounds.width as f64 * 0.5) as u32;
-        let size_width = 100;
-        let date_width = bounds.width.saturating_sub(name_width + size_width + 32);
+        // Column widths: name gets remaining space, size and date are fixed
+        let padding = 40; // Space for margins and dividers
+        let name_width = bounds.width.saturating_sub(SIZE_COLUMN_WIDTH + MODIFIED_COLUMN_WIDTH + padding);
 
         Self {
             entries: Vec::new(),
@@ -80,7 +130,7 @@ impl ListView {
             show_hidden: false,
             sort_order: SortOrder::Name,
             sort_direction: SortDirection::Ascending,
-            column_widths: [name_width, size_width, date_width],
+            column_widths: [name_width, SIZE_COLUMN_WIDTH, MODIFIED_COLUMN_WIDTH],
             resizing_column: None,
             hovered_header: None,
         }
@@ -263,14 +313,10 @@ impl ListView {
     /// Update bounds.
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
-        // Recalculate column widths proportionally
-        let total_width = bounds.width.saturating_sub(32);
-        let old_total: u32 = self.column_widths.iter().sum();
-        if old_total > 0 {
-            for width in &mut self.column_widths {
-                *width = (*width as f64 / old_total as f64 * total_width as f64) as u32;
-            }
-        }
+        // Keep size and date columns fixed, name column absorbs width changes
+        let padding = 40; // Space for margins and dividers
+        let name_width = bounds.width.saturating_sub(self.column_widths[1] + self.column_widths[2] + padding);
+        self.column_widths[0] = name_width.max(MIN_COLUMN_WIDTH);
     }
 
     /// Get header bounds.
@@ -637,26 +683,19 @@ impl ListView {
                     format!("{}{}", icon, entry.name)
                 };
 
-                renderer.text_in_rect(&display_name, name_rect, &name_style)?;
+                // Truncate filename to fit in column width
+                let truncated_name = truncate_text(renderer, &display_name, &name_style, name_rect.width.saturating_sub(8));
+                renderer.text_in_rect(&truncated_name, name_rect, &name_style)?;
             }
 
-            // Size
-            let size_rect = Rect::new(
-                row_rect.x + self.column_widths[0] as i32 + 16,
-                row_rect.y,
-                self.column_widths[1],
-                ROW_HEIGHT,
-            );
-            renderer.text_in_rect(&entry.format_size(), size_rect, &text_style)?;
+            // Size - use direct text positioning to prevent wrapping
+            let size_x = row_rect.x + self.column_widths[0] as i32 + 16;
+            let text_y = row_rect.y + 6; // Vertical centering
+            renderer.text(&entry.format_size(), size_x as f64, text_y as f64, &text_style)?;
 
-            // Modified date
-            let date_rect = Rect::new(
-                row_rect.x + self.column_widths[0] as i32 + self.column_widths[1] as i32 + 24,
-                row_rect.y,
-                self.column_widths[2],
-                ROW_HEIGHT,
-            );
-            renderer.text_in_rect(&entry.format_modified(), date_rect, &text_style)?;
+            // Modified date - use direct text positioning to prevent wrapping
+            let date_x = row_rect.x + self.column_widths[0] as i32 + self.column_widths[1] as i32 + 24;
+            renderer.text(&entry.format_modified(), date_x as f64, text_y as f64, &text_style)?;
         }
 
         Ok(())
