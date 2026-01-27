@@ -548,11 +548,13 @@ impl Sidebar {
         }
     }
 
-    /// Handle mouse move for hover effects.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move for hover effects. Returns true if hover state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
+        let old_hovered = self.hovered;
+
         if !self.visible || !self.bounds.contains_point(pos) {
             self.hovered = None;
-            return;
+            return self.hovered != old_hovered;
         }
 
         self.hovered = None;
@@ -564,6 +566,8 @@ impl Sidebar {
                 }
             }
         }
+
+        self.hovered != old_hovered
     }
 
     /// Handle mouse click. Returns the path to navigate to, if any.

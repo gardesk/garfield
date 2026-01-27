@@ -199,9 +199,11 @@ impl Toolbar {
         });
     }
 
-    /// Handle mouse move.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move. Returns true if hover state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
+        let old_hovered = self.hovered;
         self.hovered = self.buttons.iter().position(|b| b.bounds.contains_point(pos));
+        self.hovered != old_hovered
     }
 
     /// Clear hover state.

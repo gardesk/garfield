@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::core::{
-    Clipboard, ClipboardOperation, FileOperation, UndoStack,
+    Clipboard, ClipboardOperation, FileOperation, PreviewLoader, UndoStack,
     copy_files, move_files, delete_files, create_directory,
     trash_files, restore_from_trash,
 };
@@ -94,6 +94,8 @@ pub struct App {
     undo_stack: UndoStack,
     /// Pending paste operation with conflicts.
     pending_paste: Option<PendingPaste>,
+    /// Async preview loader for column view.
+    preview_loader: PreviewLoader,
 }
 
 /// State for a paste operation with conflicts.
@@ -268,6 +270,7 @@ impl App {
             pending_delete_paths: Vec::new(),
             undo_stack: UndoStack::new(),
             pending_paste: None,
+            preview_loader: PreviewLoader::new(),
         };
 
         app.update_status_bar();
@@ -310,8 +313,9 @@ impl App {
                 }
                 InputEvent::MouseMove(mouse_event) => {
                     let pos = Point::new(mouse_event.position.x, mouse_event.position.y);
-                    self.handle_mouse_move(pos);
-                    ev.request_redraw();
+                    if self.handle_mouse_move(pos) {
+                        ev.request_redraw();
+                    }
                 }
                 InputEvent::MouseLeave => {
                     self.toolbar.clear_hover();
@@ -338,6 +342,21 @@ impl App {
                 }
                 _ => {}
             }
+
+            // Poll for completed async preview loads
+            if let Some(result) = self.preview_loader.poll() {
+                if let Some(entries) = result.entries {
+                    if let Some(pane) = self.focused_pane_mut() {
+                        if let Some(tab) = pane.active_tab_mut() {
+                            tab.set_preview_entries(&result.path, entries);
+                        }
+                    }
+                }
+                ev.request_redraw();
+            }
+
+            // Check for pending preview requests and submit them
+            self.process_pending_previews();
 
             if ev.needs_redraw() {
                 let _ = self.render();
@@ -623,42 +642,42 @@ impl App {
         }
     }
 
-    /// Handle mouse move.
-    fn handle_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move. Returns true if a redraw is needed.
+    fn handle_mouse_move(&mut self, pos: Point) -> bool {
         // Handle progress dialog hover
         if self.progress_dialog.is_visible() {
             self.progress_dialog.on_mouse_move(pos);
-            return;
+            return true; // Dialogs always redraw for responsiveness
         }
 
         // Handle confirm dialog hover
         if self.confirm_dialog.is_visible() {
             self.confirm_dialog.on_mouse_move(pos);
-            return;
+            return true;
         }
 
         // Handle conflict dialog hover
         if self.conflict_dialog.is_visible() {
             self.conflict_dialog.on_mouse_move(pos);
-            return;
+            return true;
         }
 
         // Handle input dialog hover
         if self.input_dialog.is_visible() {
             self.input_dialog.on_mouse_move(pos);
-            return;
+            return true;
         }
 
         // Handle app picker hover
         if self.app_picker.is_visible() {
             self.app_picker.on_mouse_move(pos);
-            return;
+            return true;
         }
 
         // Handle context menu hover
         if self.context_menu.is_visible() {
             self.context_menu.on_mouse_move(pos);
-            return;
+            return true;
         }
 
         // Handle sidebar resize in progress
@@ -667,14 +686,14 @@ impl App {
             self.sidebar.set_width(new_width);
             let size = self.renderer.size();
             self.update_layout(size.width, size.height);
-            return;
+            return true;
         }
 
         // Handle pane divider resize in progress
         if let Some(path) = &self.pane_resize_path {
             let path_clone = path.clone();
             self.root_pane.adjust_split_at(&path_clone, pos);
-            return;
+            return true;
         }
 
         // Handle column resize/drag in progress
@@ -683,18 +702,22 @@ impl App {
                 if let Some(tab) = pane.active_tab_mut() {
                     tab.on_mouse_move(pos);
                 }
-                return;
+                return true;
             }
         }
+
+        let mut needs_redraw = false;
 
         // Handle tab reorder drag in progress
         if self.tab_bar.dragging_tab().is_some() {
             self.tab_bar.update_drag(pos);
+            needs_redraw = true;
         }
 
         // Handle bookmark reorder drag in progress
         if self.sidebar.bookmark_drag_index().is_some() {
             self.sidebar.update_bookmark_drag(pos);
+            needs_redraw = true;
         }
 
         // Handle bookmark drag in progress (dragging from file view)
@@ -715,18 +738,22 @@ impl App {
                 let is_over_drop_zone = self.sidebar.is_bookmark_drop_zone(pos);
                 self.sidebar.set_drop_highlight(is_over_drop_zone);
             }
+            needs_redraw = true;
         }
 
-        self.toolbar.on_mouse_move(pos);
-        self.breadcrumb.on_mouse_move(pos);
-        self.sidebar.on_mouse_move(pos);
-        self.tab_bar.on_mouse_move(pos);
+        // Check hover states - only redraw if any changed
+        needs_redraw |= self.toolbar.on_mouse_move(pos);
+        needs_redraw |= self.breadcrumb.on_mouse_move(pos);
+        needs_redraw |= self.sidebar.on_mouse_move(pos);
+        needs_redraw |= self.tab_bar.on_mouse_move(pos);
 
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
-                tab.on_mouse_move(pos);
+                needs_redraw |= tab.on_mouse_move(pos);
             }
         }
+
+        needs_redraw
     }
 
     /// Handle a key press.
@@ -2444,6 +2471,18 @@ impl App {
 
         if let Some(path) = path {
             self.breadcrumb.set_path(&path);
+        }
+    }
+
+    /// Process pending preview requests from column views.
+    fn process_pending_previews(&mut self) {
+        // Check focused pane's active tab for pending preview
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                if let Some((path, sort_order, sort_direction)) = tab.take_pending_preview() {
+                    self.preview_loader.load(path, sort_order, sort_direction);
+                }
+            }
         }
     }
 

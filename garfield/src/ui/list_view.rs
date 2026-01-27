@@ -348,8 +348,8 @@ impl ListView {
         self.resizing_column.is_some()
     }
 
-    /// Handle mouse move (for hover and resize).
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move (for hover and resize). Returns true if state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         // Handle active resize
         if let Some(divider_index) = self.resizing_column {
             let new_x = pos.x;
@@ -379,12 +379,14 @@ impl ListView {
                 }
                 _ => {}
             }
-            return;
+            return true; // Resizing always needs redraw
         }
+
+        let old_hovered = self.hovered_header;
 
         if !self.bounds.contains_point(pos) {
             self.hovered_header = None;
-            return;
+            return self.hovered_header != old_hovered;
         }
 
         let header = self.header_bounds();
@@ -392,19 +394,20 @@ impl ListView {
             // Check for column resize zones
             if self.divider_at(pos).is_some() {
                 self.hovered_header = None;
-                return;
+                return self.hovered_header != old_hovered;
             }
 
             // Check column headers for hover
             for col in [Column::Name, Column::Size, Column::Modified] {
                 if self.column_header_bounds(col).contains_point(pos) {
                     self.hovered_header = Some(col);
-                    return;
+                    return self.hovered_header != old_hovered;
                 }
             }
         }
 
         self.hovered_header = None;
+        self.hovered_header != old_hovered
     }
 
     /// Handle header click for sorting. Returns (new_order, new_direction) if sort changed.

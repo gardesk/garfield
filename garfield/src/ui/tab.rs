@@ -370,7 +370,7 @@ impl Tab {
 
     // === Mouse handling ===
 
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         match self.view_mode {
             ViewMode::List => self.list_view.on_mouse_move(pos),
             ViewMode::Grid => self.grid_view.on_mouse_move(pos),
@@ -672,6 +672,30 @@ impl Tab {
             ViewMode::Grid => self.grid_view.render(renderer, self.renaming.as_ref()),
             ViewMode::Columns => self.column_view.render(renderer),
         }
+    }
+
+    // === Async Preview Support ===
+
+    /// Take pending preview request for column view (if in column mode).
+    /// Returns (path, sort_order, sort_direction) if a preview needs loading.
+    pub fn take_pending_preview(&mut self) -> Option<(PathBuf, SortOrder, SortDirection)> {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.take_pending_preview()
+        } else {
+            None
+        }
+    }
+
+    /// Set preview entries for column view.
+    pub fn set_preview_entries(&mut self, path: &PathBuf, entries: Vec<FileEntry>) {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.set_preview_entries(path, entries);
+        }
+    }
+
+    /// Check if preview is currently loading.
+    pub fn is_preview_loading(&self) -> bool {
+        self.view_mode == ViewMode::Columns && self.column_view.is_preview_loading()
     }
 }
 

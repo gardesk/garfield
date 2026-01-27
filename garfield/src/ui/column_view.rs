@@ -81,6 +81,8 @@ pub struct ColumnView {
     current_column: Column,
     /// Preview column (contents of selected dir or file info).
     preview_column: Option<Column>,
+    /// Path that needs preview loading (set when selection changes to a directory).
+    pending_preview_path: Option<PathBuf>,
     /// View bounds.
     bounds: Rect,
     /// Show hidden files.
@@ -108,6 +110,7 @@ impl ColumnView {
             parent_column: None,
             current_column: Column::new(Vec::new(), column_bounds),
             preview_column: None,
+            pending_preview_path: None,
             bounds,
             show_hidden: false,
             sort_order: SortOrder::Name,
@@ -179,24 +182,67 @@ impl ColumnView {
         self.update_preview();
     }
 
-    /// Update preview column based on current selection.
+    /// Mark that preview needs to be updated based on current selection.
+    /// Does not load synchronously - call `take_pending_preview()` to get the path
+    /// that needs loading, then `set_preview_entries()` when data is ready.
     fn update_preview(&mut self) {
         let visible = self.current_column.visible_entries(self.show_hidden);
         if let Some(entry) = visible.get(self.current_column.selected).copied() {
             if entry.is_dir() {
-                let preview_x = self.current_column.bounds.x + self.current_column.bounds.width as i32;
-                let preview_width = self.bounds.x + self.bounds.width as i32 - preview_x;
-                let preview_bounds = Rect::new(preview_x, self.bounds.y, preview_width as u32, self.bounds.height);
-
-                let mut entries = read_directory(&entry.path).unwrap_or_default();
-                sort_entries(&mut entries, self.sort_order, self.sort_direction);
-                self.preview_column = Some(Column::new(entries, preview_bounds));
+                // Check if we already have the correct preview loaded
+                let needs_load = self.pending_preview_path.as_ref() != Some(&entry.path);
+                if needs_load {
+                    self.pending_preview_path = Some(entry.path.clone());
+                    // Clear current preview while loading
+                    self.preview_column = None;
+                }
             } else {
+                self.pending_preview_path = None;
                 self.preview_column = None;
             }
         } else {
+            self.pending_preview_path = None;
             self.preview_column = None;
         }
+    }
+
+    /// Get the path that needs preview loading, if any.
+    /// Returns the path and sort settings. Returns None if no preview needed.
+    pub fn take_pending_preview(&mut self) -> Option<(PathBuf, SortOrder, SortDirection)> {
+        self.pending_preview_path.take().map(|path| {
+            (path, self.sort_order, self.sort_direction)
+        })
+    }
+
+    /// Check if there's a pending preview load for a specific path.
+    pub fn has_pending_preview_for(&self, path: &PathBuf) -> bool {
+        self.pending_preview_path.as_ref() == Some(path)
+    }
+
+    /// Set preview entries from externally loaded data.
+    pub fn set_preview_entries(&mut self, path: &PathBuf, entries: Vec<FileEntry>) {
+        // Only set if this is still the path we're waiting for
+        let visible = self.current_column.visible_entries(self.show_hidden);
+        let selected_is_dir = visible
+            .get(self.current_column.selected)
+            .map(|e| e.is_dir() && &e.path == path)
+            .unwrap_or(false);
+
+        if selected_is_dir {
+            let preview_x = self.current_column.bounds.x + self.current_column.bounds.width as i32;
+            let preview_width = self.bounds.x + self.bounds.width as i32 - preview_x;
+            let preview_bounds = Rect::new(preview_x, self.bounds.y, preview_width as u32, self.bounds.height);
+            self.preview_column = Some(Column::new(entries, preview_bounds));
+        }
+        // Clear pending if this was what we were waiting for
+        if self.pending_preview_path.as_ref() == Some(path) {
+            self.pending_preview_path = None;
+        }
+    }
+
+    /// Check if preview is currently loading.
+    pub fn is_preview_loading(&self) -> bool {
+        self.pending_preview_path.is_some()
     }
 
     /// Get visible entries in current column.
@@ -349,10 +395,13 @@ impl ColumnView {
         self.update_columns();
     }
 
-    /// Handle mouse move for hover effects.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move for hover effects. Returns true if hover state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
+        let mut changed = false;
+
         // Parent column hover
         if let Some(ref mut parent) = self.parent_column {
+            let old_hovered = parent.hovered;
             parent.hovered = None;
             if parent.bounds.contains_point(pos) {
                 let visible = parent.visible_entries(self.show_hidden);
@@ -365,9 +414,13 @@ impl ColumnView {
                     }
                 }
             }
+            if parent.hovered != old_hovered {
+                changed = true;
+            }
         }
 
         // Current column hover
+        let old_current_hovered = self.current_column.hovered;
         self.current_column.hovered = None;
         if self.current_column.bounds.contains_point(pos) {
             let visible = self.visible_entries();
@@ -380,9 +433,13 @@ impl ColumnView {
                 }
             }
         }
+        if self.current_column.hovered != old_current_hovered {
+            changed = true;
+        }
 
         // Preview column hover
         if let Some(ref mut preview) = self.preview_column {
+            let old_preview_hovered = preview.hovered;
             preview.hovered = None;
             if preview.bounds.contains_point(pos) {
                 let visible = preview.visible_entries(self.show_hidden);
@@ -395,7 +452,12 @@ impl ColumnView {
                     }
                 }
             }
+            if preview.hovered != old_preview_hovered {
+                changed = true;
+            }
         }
+
+        changed
     }
 
     /// Get the entry at the given position (for drag detection).

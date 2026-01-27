@@ -125,13 +125,16 @@ impl TabBar {
         })
     }
 
-    /// Handle mouse move for hover effects.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move for hover effects. Returns true if hover state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
+        let old_hovered_tab = self.hovered_tab;
+        let old_hovered_close = self.hovered_close;
+
         self.hovered_tab = None;
         self.hovered_close = None;
 
         if !self.bounds.contains_point(pos) {
-            return;
+            return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
         }
 
         for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
@@ -140,13 +143,15 @@ impl TabBar {
                 if let Some(close_bounds) = self.close_button_bounds(i) {
                     if close_bounds.contains_point(pos) {
                         self.hovered_close = Some(i);
-                        return;
+                        return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
                     }
                 }
                 self.hovered_tab = Some(i);
-                return;
+                return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
             }
         }
+
+        self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close
     }
 
     /// Handle click. Returns (clicked_tab, is_close_button).

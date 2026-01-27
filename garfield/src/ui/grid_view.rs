@@ -339,18 +339,20 @@ impl GridView {
         Rect::new(x, y, cell_size, cell_size)
     }
 
-    /// Handle mouse move for hover effects and rubber band drag.
-    pub fn on_mouse_move(&mut self, pos: Point) {
+    /// Handle mouse move for hover effects and rubber band drag. Returns true if state changed.
+    pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         // Handle rubber band drag
         if self.drag_start.is_some() {
             self.drag_current = Some(pos);
             self.update_rubber_band_selection();
-            return;
+            return true; // Rubber band always needs redraw
         }
+
+        let old_hovered = self.hovered;
 
         if !self.bounds.contains_point(pos) {
             self.hovered = None;
-            return;
+            return self.hovered != old_hovered;
         }
 
         let visible = self.visible_entries();
@@ -364,6 +366,8 @@ impl GridView {
                 break;
             }
         }
+
+        self.hovered != old_hovered
     }
 
     /// Start rubber band selection.
