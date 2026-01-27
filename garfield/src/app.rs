@@ -10,7 +10,7 @@ use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, Con
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, TextStyle};
-use gartk_x11::{Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
+use gartk_x11::{ClipboardManager, Connection, EventLoop, EventLoopConfig, Window, WindowConfig};
 use std::path::PathBuf;
 use std::time::Instant;
 use x11rb::protocol::xproto::{ConnectionExt, ImageFormat};
@@ -98,6 +98,8 @@ pub struct App {
     preview_loader: PreviewLoader,
     /// Async image preview loader.
     image_preview_loader: ImagePreviewLoader,
+    /// X11 clipboard manager for system clipboard integration.
+    x11_clipboard: ClipboardManager,
 }
 
 /// State for a paste operation with conflicts.
@@ -139,6 +141,9 @@ impl App {
         )?;
 
         window.focus()?;
+
+        // Create X11 clipboard manager for system clipboard integration
+        let x11_clipboard = ClipboardManager::new(conn.clone(), window.id())?;
 
         // Create graphics context for blitting
         let gc = conn.generate_id()?;
@@ -274,6 +279,7 @@ impl App {
             pending_paste: None,
             preview_loader: PreviewLoader::new(),
             image_preview_loader: ImagePreviewLoader::new(),
+            x11_clipboard,
         };
 
         app.update_status_bar();
@@ -348,6 +354,18 @@ impl App {
                     if self.handle_scroll(pos, scroll_event.delta_x, scroll_event.delta_y) {
                         ev.request_redraw();
                     }
+                }
+                InputEvent::SelectionRequest(req) => {
+                    // Another application is requesting our clipboard data
+                    tracing::debug!("Received SelectionRequest event");
+                    if let Err(e) = self.x11_clipboard.handle_selection_request(&req) {
+                        tracing::warn!("Failed to handle selection request: {}", e);
+                    }
+                }
+                InputEvent::SelectionClear => {
+                    // We lost clipboard ownership to another application
+                    tracing::debug!("Received SelectionClear event");
+                    self.x11_clipboard.handle_selection_clear();
                 }
                 _ => {}
             }
@@ -1493,7 +1511,15 @@ impl App {
         let paths = self.get_selected_paths();
         if !paths.is_empty() {
             let count = paths.len();
-            self.clipboard.copy(paths);
+
+            // Update internal clipboard
+            self.clipboard.copy(paths.clone());
+
+            // Update X11 system clipboard so other apps can paste
+            if let Err(e) = self.x11_clipboard.set_files(&paths, false) {
+                tracing::warn!("Failed to set X11 clipboard: {}", e);
+            }
+
             let msg = if count == 1 { "1 item copied".to_string() } else { format!("{} items copied", count) };
             self.status_bar.set_status_message(msg);
             self.update_status_bar();
@@ -1505,7 +1531,15 @@ impl App {
         let paths = self.get_selected_paths();
         if !paths.is_empty() {
             let count = paths.len();
-            self.clipboard.cut(paths);
+
+            // Update internal clipboard
+            self.clipboard.cut(paths.clone());
+
+            // Update X11 system clipboard with cut flag so other apps know to move
+            if let Err(e) = self.x11_clipboard.set_files(&paths, true) {
+                tracing::warn!("Failed to set X11 clipboard: {}", e);
+            }
+
             let msg = if count == 1 { "1 item cut".to_string() } else { format!("{} items cut", count) };
             self.status_bar.set_status_message(msg);
             self.update_status_bar();
