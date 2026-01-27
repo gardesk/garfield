@@ -5,6 +5,7 @@ pub mod entry;
 pub mod history;
 pub mod image_preview;
 pub mod operations;
+pub mod pdf_preview;
 pub mod thumbnail;
 pub mod preview_loader;
 pub mod trash;
@@ -20,6 +21,7 @@ pub use operations::{
     copy_files, copy_path, copy_to_path, create_directory, delete_files, delete_path,
     make_unique_name, move_files, move_path, rename_path, OperationResult,
 };
+pub use pdf_preview::{is_pdf, PdfPreview, PdfPreviewLoader, PdfPreviewResult};
 pub use preview_loader::{PreviewLoader, PreviewResult};
 pub use thumbnail::{Thumbnail, ThumbnailLoader, THUMBNAIL_SIZE};
 pub use trash::{empty_trash, restore_from_trash, trash_file, trash_files, trash_dir};

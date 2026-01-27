@@ -54,5 +54,9 @@ nucleo-matcher = "0.3"
 # Image handling
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 
+# PDF rendering
+poppler-rs = "0.25"
+cairo-rs = { version = "0.21", features = ["png"] }
+
 # IPC types (shared between crates)
 garfield-ipc = { path = "garfield-ipc" }

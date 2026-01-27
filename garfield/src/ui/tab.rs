@@ -751,6 +751,22 @@ impl Tab {
         }
     }
 
+    /// Take pending PDF preview request (path, max_width, max_height).
+    pub fn take_pending_pdf_preview(&mut self) -> Option<(PathBuf, u32, u32)> {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.take_pending_pdf_preview()
+        } else {
+            None
+        }
+    }
+
+    /// Set loaded PDF preview for column view.
+    pub fn set_pdf_preview(&mut self, path: &PathBuf, pdf: Option<crate::core::PdfPreview>) {
+        if self.view_mode == ViewMode::Columns {
+            self.column_view.set_pdf_preview(path, pdf);
+        }
+    }
+
     /// Poll for completed grid view thumbnails. Returns true if any loaded.
     pub fn poll_thumbnails(&mut self) -> bool {
         self.grid_view.poll_thumbnails()

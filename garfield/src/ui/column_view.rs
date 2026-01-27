@@ -1,6 +1,6 @@
 //! Miller columns view (like macOS Finder).
 
-use crate::core::{read_directory, sort_entries, EntryType, FileEntry, ImagePreview, SortDirection, SortOrder, is_supported_image};
+use crate::core::{read_directory, sort_entries, EntryType, FileEntry, ImagePreview, PdfPreview, SortDirection, SortOrder, is_supported_image, is_pdf};
 use gartk_core::{Color, Modifiers, Point, Rect};
 use gartk_render::{Renderer, TextStyle, Surface};
 use std::collections::HashSet;
@@ -91,6 +91,14 @@ pub struct ColumnView {
     image_preview_path: Option<PathBuf>,
     /// Cached Cairo surface for the image preview.
     image_surface: Option<Surface>,
+    /// Path that needs PDF preview loading.
+    pending_pdf_preview_path: Option<PathBuf>,
+    /// Loaded PDF preview.
+    pdf_preview: Option<PdfPreview>,
+    /// Path of the loaded PDF preview (for matching).
+    pdf_preview_path: Option<PathBuf>,
+    /// Cached Cairo surface for the PDF preview.
+    pdf_surface: Option<Surface>,
     /// View bounds.
     bounds: Rect,
     /// Show hidden files.
@@ -123,6 +131,10 @@ impl ColumnView {
             image_preview: None,
             image_preview_path: None,
             image_surface: None,
+            pending_pdf_preview_path: None,
+            pdf_preview: None,
+            pdf_preview_path: None,
+            pdf_surface: None,
             bounds,
             show_hidden: false,
             sort_order: SortOrder::Name,
@@ -208,11 +220,8 @@ impl ColumnView {
                     // Clear current preview while loading
                     self.preview_column = None;
                 }
-                // Clear image preview for directories
-                self.pending_image_preview_path = None;
-                self.image_preview = None;
-                self.image_preview_path = None;
-                self.image_surface = None;
+                // Clear image/PDF preview for directories
+                self.clear_file_previews();
             } else {
                 self.pending_preview_path = None;
                 self.preview_column = None;
@@ -227,22 +236,48 @@ impl ColumnView {
                         self.image_preview_path = None;
                         self.image_surface = None;
                     }
-                } else {
-                    // Not an image - clear image preview
+                    // Clear PDF preview when showing image
+                    self.pending_pdf_preview_path = None;
+                    self.pdf_preview = None;
+                    self.pdf_preview_path = None;
+                    self.pdf_surface = None;
+                } else if is_pdf(entry.extension().as_deref()) {
+                    // Check if this is a PDF file that needs preview
+                    let needs_load = self.pdf_preview_path.as_ref() != Some(&entry.path);
+                    if needs_load {
+                        self.pending_pdf_preview_path = Some(entry.path.clone());
+                        // Clear current PDF preview while loading
+                        self.pdf_preview = None;
+                        self.pdf_preview_path = None;
+                        self.pdf_surface = None;
+                    }
+                    // Clear image preview when showing PDF
                     self.pending_image_preview_path = None;
                     self.image_preview = None;
                     self.image_preview_path = None;
                     self.image_surface = None;
+                } else {
+                    // Not an image or PDF - clear both previews
+                    self.clear_file_previews();
                 }
             }
         } else {
             self.pending_preview_path = None;
             self.preview_column = None;
-            self.pending_image_preview_path = None;
-            self.image_preview = None;
-            self.image_preview_path = None;
-            self.image_surface = None;
+            self.clear_file_previews();
         }
+    }
+
+    /// Clear all file preview state (image and PDF).
+    fn clear_file_previews(&mut self) {
+        self.pending_image_preview_path = None;
+        self.image_preview = None;
+        self.image_preview_path = None;
+        self.image_surface = None;
+        self.pending_pdf_preview_path = None;
+        self.pdf_preview = None;
+        self.pdf_preview_path = None;
+        self.pdf_surface = None;
     }
 
     /// Get the path that needs preview loading, if any.
@@ -312,6 +347,37 @@ impl ColumnView {
             }
             self.image_preview = image;
             self.image_preview_path = Some(path.clone());
+        }
+    }
+
+    /// Take pending PDF preview request (path, max_width, max_height).
+    pub fn take_pending_pdf_preview(&mut self) -> Option<(PathBuf, u32, u32)> {
+        self.pending_pdf_preview_path.take().map(|path| {
+            let preview_x = self.current_column.bounds.x + self.current_column.bounds.width as i32;
+            let preview_width = (self.bounds.x + self.bounds.width as i32 - preview_x) as u32;
+            let preview_height = self.bounds.height / 2; // Use half height for PDF
+            (path, preview_width.saturating_sub(32), preview_height.saturating_sub(32))
+        })
+    }
+
+    /// Set loaded PDF preview.
+    pub fn set_pdf_preview(&mut self, path: &PathBuf, pdf: Option<PdfPreview>) {
+        // Only set if this is still the path we're displaying
+        let visible = self.current_column.visible_entries(self.show_hidden);
+        let selected_matches = visible
+            .get(self.current_column.selected)
+            .map(|e| &e.path == path)
+            .unwrap_or(false);
+
+        if selected_matches {
+            if let Some(ref preview) = pdf {
+                // Create a Cairo surface from the RGBA data
+                self.pdf_surface = Surface::from_rgba(&preview.data, preview.width, preview.height).ok();
+            } else {
+                self.pdf_surface = None;
+            }
+            self.pdf_preview = pdf;
+            self.pdf_preview_path = Some(path.clone());
         }
     }
 
@@ -860,6 +926,32 @@ impl ColumnView {
 
             // Move y below the image with padding
             y += img_height as i32 + 24;
+        } else if let Some(ref surface) = self.pdf_surface {
+            // Render PDF preview
+            let img_width = surface.width();
+            let img_height = surface.height();
+            let max_width = preview_width.saturating_sub(32);
+
+            let img_x = preview_x + 16 + (max_width.saturating_sub(img_width) / 2) as i32;
+            let img_y = y;
+
+            // Draw the PDF preview using Cairo
+            let ctx = renderer.context()?;
+            ctx.set_source_surface(surface.cairo_surface(), img_x as f64, img_y as f64)?;
+            ctx.paint()?;
+
+            // Show page count if available
+            if let Some(ref pdf) = self.pdf_preview {
+                let page_info = format!("Page 1 of {}", pdf.page_count);
+                let page_style = TextStyle::new()
+                    .font_family(&theme.font_family)
+                    .font_size(theme.font_size - 2.0)
+                    .color(theme.item_foreground.with_alpha(0.6));
+                renderer.text(&page_info, (img_x + 4) as f64, (img_y + img_height as i32 + 4) as f64, &page_style)?;
+            }
+
+            // Move y below the preview with padding
+            y += img_height as i32 + 32;
         } else if is_supported_image(entry.extension().as_deref()) && self.pending_image_preview_path.is_some() {
             // Show loading indicator for images
             let loading_style = TextStyle::new()
@@ -867,6 +959,14 @@ impl ColumnView {
                 .font_size(theme.font_size)
                 .color(theme.item_foreground.with_alpha(0.5));
             renderer.text("Loading preview...", x as f64, y as f64, &loading_style)?;
+            y += 40;
+        } else if is_pdf(entry.extension().as_deref()) && self.pending_pdf_preview_path.is_some() {
+            // Show loading indicator for PDFs
+            let loading_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size)
+                .color(theme.item_foreground.with_alpha(0.5));
+            renderer.text("Loading PDF preview...", x as f64, y as f64, &loading_style)?;
             y += 40;
         }
 

@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::core::{
-    Clipboard, ClipboardOperation, FileOperation, ImagePreviewLoader, PreviewLoader, UndoStack,
+    Clipboard, ClipboardOperation, FileOperation, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, UndoStack,
     copy_files, move_files, delete_files, create_directory,
     trash_files, restore_from_trash,
 };
@@ -98,6 +98,8 @@ pub struct App {
     preview_loader: PreviewLoader,
     /// Async image preview loader.
     image_preview_loader: ImagePreviewLoader,
+    /// Async PDF preview loader.
+    pdf_preview_loader: PdfPreviewLoader,
     /// X11 clipboard manager for system clipboard integration.
     x11_clipboard: ClipboardManager,
 }
@@ -279,6 +281,7 @@ impl App {
             pending_paste: None,
             preview_loader: PreviewLoader::new(),
             image_preview_loader: ImagePreviewLoader::new(),
+            pdf_preview_loader: PdfPreviewLoader::new(),
             x11_clipboard,
         };
 
@@ -392,6 +395,16 @@ impl App {
                 ev.request_redraw();
             }
 
+            // Poll for completed async PDF preview loads
+            if let Some(result) = self.pdf_preview_loader.poll() {
+                if let Some(pane) = self.focused_pane_mut() {
+                    if let Some(tab) = pane.active_tab_mut() {
+                        tab.set_pdf_preview(&result.path, result.image);
+                    }
+                }
+                ev.request_redraw();
+            }
+
             // Poll for completed grid view thumbnails
             if let Some(pane) = self.focused_pane_mut() {
                 if let Some(tab) = pane.active_tab_mut() {
@@ -404,6 +417,7 @@ impl App {
             // Check for pending preview requests and submit them
             self.process_pending_previews();
             self.process_pending_image_previews();
+            self.process_pending_pdf_previews();
 
             // Request thumbnails for visible grid items
             if let Some(pane) = self.focused_pane_mut() {
@@ -2601,6 +2615,17 @@ impl App {
             if let Some(tab) = pane.active_tab_mut() {
                 if let Some((path, max_width, max_height)) = tab.take_pending_image_preview() {
                     self.image_preview_loader.load(path, max_width, max_height);
+                }
+            }
+        }
+    }
+
+    /// Process pending PDF preview requests.
+    fn process_pending_pdf_previews(&mut self) {
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                if let Some((path, max_width, max_height)) = tab.take_pending_pdf_preview() {
+                    self.pdf_preview_loader.load(path, max_width, max_height);
                 }
             }
         }

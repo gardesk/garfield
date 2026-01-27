@@ -47,3 +47,7 @@ garfield-ipc.workspace = true
 
 # Image handling
 image.workspace = true
+
+# PDF rendering
+poppler-rs.workspace = true
+cairo-rs.workspace = true
