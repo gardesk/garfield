@@ -1,7 +1,7 @@
 //! Application state and event loop.
 
 use garfield::core::{
-    Clipboard, ClipboardOperation, FileOperation, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, UndoStack,
+    Clipboard, ClipboardOperation, DragTarget, FileOperation, FileDragController, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, UndoStack,
     copy_files, move_files, delete_files, create_directory,
     trash_files, restore_from_trash,
 };
@@ -72,6 +72,8 @@ pub struct App {
     drag_current_pos: Option<Point>,
     /// Whether drag is actively in progress (moved past threshold).
     drag_active: bool,
+    /// File drag controller for drag-to-move operations.
+    file_drag: FileDragController,
     /// Clipboard for file operations.
     clipboard: Clipboard,
     /// Confirmation dialog.
@@ -268,6 +270,7 @@ impl App {
             drag_start_pos: None,
             drag_current_pos: None,
             drag_active: false,
+            file_drag: FileDragController::new(),
             clipboard: Clipboard::new(),
             confirm_dialog,
             conflict_dialog,
@@ -410,6 +413,19 @@ impl App {
                 if let Some(tab) = pane.active_tab_mut() {
                     if tab.poll_thumbnails() {
                         ev.request_redraw();
+                    }
+                }
+            }
+
+            // Update file drag flash animation
+            if self.file_drag.is_hovering() {
+                let flash_complete = self.file_drag.update_flash();
+                ev.request_redraw();
+
+                if flash_complete {
+                    // Flash sequence complete - trigger auto-enter
+                    if let Some(target) = self.file_drag.get_auto_enter_target() {
+                        self.handle_file_drag_auto_enter(target);
                     }
                 }
             }
@@ -629,6 +645,25 @@ impl App {
             self.last_click_time = None;
             self.last_click_pos = None;
         } else {
+            // Check if clicking on an already-selected item - start pending file drag
+            let start_file_drag = self.focused_pane()
+                .and_then(|pane| pane.active_tab())
+                .and_then(|tab| {
+                    tab.entry_at_point(pos).map(|entry| {
+                        let is_selected = tab.is_path_selected(&entry.path);
+                        (is_selected, tab.selected_paths())
+                    })
+                });
+
+            if let Some((true, selected_paths)) = start_file_drag {
+                // Clicking on an already-selected item - start pending file drag
+                if !selected_paths.is_empty() {
+                    self.file_drag.start_pending(pos, selected_paths);
+                    self.update_status_bar();
+                    return;
+                }
+            }
+
             // Single click: handle selection
             if let Some(pane) = self.focused_pane_mut() {
                 if let Some(tab) = pane.active_tab_mut() {
@@ -688,6 +723,30 @@ impl App {
                     self.sidebar.add_bookmark(&path);
                 }
             }
+        }
+
+        // Handle file drag drop completion
+        if self.file_drag.is_dragging() {
+            // Get paths BEFORE complete() since it calls cancel() internally
+            let dragged_paths = self.file_drag.dragged_paths().cloned();
+
+            if let Some((paths, target)) = self.file_drag.complete() {
+                // Dropped on a specific target (hovering state)
+                let dest_dir = target.path().clone();
+                self.move_files_to_directory(paths, dest_dir);
+            } else if let Some(paths) = dragged_paths {
+                // Dropped while dragging (not hovering on target) - move to current directory
+                // This happens after auto-entering directories via hover
+                if let Some(dest_dir) = self.focused_pane()
+                    .and_then(|p| p.active_tab())
+                    .map(|t| t.current_path().clone())
+                {
+                    self.move_files_to_directory(paths, dest_dir);
+                }
+            }
+        } else {
+            // Cancel file drag if it was pending but didn't activate
+            self.file_drag.cancel();
         }
 
         // Clear drag state
@@ -782,6 +841,18 @@ impl App {
         }
 
         let mut needs_redraw = false;
+
+        // Handle file drag in progress
+        if self.file_drag.is_active() {
+            self.file_drag.update_position(pos);
+
+            // If actively dragging (past threshold), detect hover targets and always redraw
+            if self.file_drag.is_dragging() {
+                needs_redraw = true;  // Always redraw when dragging for smooth cursor tracking
+                let target = self.detect_file_drag_target(pos);
+                self.file_drag.set_hover_target(target);
+            }
+        }
 
         // Handle tab reorder drag in progress
         if self.tab_bar.dragging_tab().is_some() {
@@ -923,6 +994,12 @@ impl App {
             if let Some(action) = self.context_menu.handle_key(key) {
                 self.handle_context_menu_action(action);
             }
+            return;
+        }
+
+        // Cancel file drag on Escape
+        if *key == Key::Escape && self.file_drag.is_active() {
+            self.file_drag.cancel();
             return;
         }
 
@@ -1667,6 +1744,74 @@ impl App {
         }
     }
 
+    /// Move files to a directory (used by drag-and-drop).
+    fn move_files_to_directory(&mut self, files: Vec<PathBuf>, dest_dir: PathBuf) {
+        // Filter out files that are already in the destination directory (same-directory drop = cancel)
+        let files: Vec<PathBuf> = files.into_iter()
+            .filter(|f| f.parent() != Some(dest_dir.as_path()))
+            .collect();
+
+        // If no files need moving, silently cancel
+        if files.is_empty() {
+            return;
+        }
+
+        // Check for conflicts first
+        let conflicts: Vec<PathBuf> = files.iter()
+            .filter_map(|f| {
+                f.file_name().and_then(|name| {
+                    let dest = dest_dir.join(name);
+                    if dest.exists() { Some(f.clone()) } else { None }
+                })
+            })
+            .collect();
+
+        if !conflicts.is_empty() {
+            // Ring bell to alert user
+            self.bell();
+
+            // Show conflict dialog for the first conflict
+            let first_conflict_name = conflicts[0]
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            self.conflict_dialog.show(&first_conflict_name);
+
+            // Store pending paste state (reuse for drag-drop moves)
+            self.pending_paste = Some(PendingPaste {
+                files,
+                operation: ClipboardOperation::Cut, // Move operation
+                dest_dir,
+                conflicts,
+            });
+            return;
+        }
+
+        // No conflicts - proceed with move
+        let count = files.len();
+        let sources = files.clone();
+        let result = move_files(&files, &dest_dir);
+
+        // Show result in status bar and record for undo
+        if result.success && !result.processed.is_empty() {
+            let msg = if count == 1 { "1 item moved".to_string() } else { format!("{} items moved", count) };
+            self.status_bar.set_status_message(msg);
+
+            // Record for undo
+            let undo_op = FileOperation::Move {
+                sources,
+                destinations: result.processed.clone(),
+            };
+            self.undo_stack.push(undo_op);
+        } else if !result.success {
+            let msg = format!("Move failed: {}", result.error.as_deref().unwrap_or("unknown error"));
+            self.status_bar.set_status_message(msg);
+        }
+
+        self.refresh();
+    }
+
     /// Move selected files to trash.
     fn trash_selected(&mut self) {
         let paths = self.get_selected_paths();
@@ -2000,6 +2145,97 @@ impl App {
         // X11 bell
         let _ = self.window.connection().inner().bell(0);
         let _ = self.window.connection().flush();
+    }
+
+    /// Handle auto-enter when file drag flash completes.
+    /// Enters the directory or switches to the tab, then continues dragging.
+    fn handle_file_drag_auto_enter(&mut self, target: DragTarget) {
+        match target {
+            DragTarget::Directory { path, .. } => {
+                // Navigate into the directory
+                self.navigate_to(path);
+                // Continue dragging in the new directory
+                self.file_drag.continue_after_enter();
+            }
+            DragTarget::Tab { index, .. } => {
+                // Switch to the target tab
+                if let Some(pane) = self.focused_pane_mut() {
+                    pane.set_active_tab(index);
+                }
+                self.sync_tab_bar();
+                self.sync_breadcrumb();
+                self.update_status_bar();
+                // Continue dragging in the new tab
+                self.file_drag.continue_after_enter();
+            }
+            DragTarget::Breadcrumb { path, .. } => {
+                // Navigate to the breadcrumb segment directory
+                self.navigate_to(path);
+                // Continue dragging in the new directory
+                self.file_drag.continue_after_enter();
+            }
+        }
+    }
+
+    /// Detect a valid drag target at the given position.
+    /// Checks tabs first (for switching), then directories in the view.
+    fn detect_file_drag_target(&self, pos: Point) -> Option<DragTarget> {
+        // Get the paths being dragged to exclude them as targets
+        let dragged_paths = self.file_drag.dragged_paths()
+            .map(|paths| paths.clone())
+            .unwrap_or_default();
+
+        // Check tab bar first - can drop on any tab except if it contains the dragged item
+        if let Some(tab_index) = self.tab_bar.tab_at_point(pos) {
+            // Get the target path for this tab
+            if let Some(pane) = self.focused_pane() {
+                let tabs = pane.tabs();
+                if let Some(tab) = tabs.get(tab_index) {
+                    let target_path = tab.current_path().clone();
+                    // Don't allow dropping into the same directory where items came from
+                    if let Some(current_tab) = pane.active_tab() {
+                        if current_tab.current_path() != &target_path {
+                            return Some(DragTarget::Tab {
+                                index: tab_index,
+                                target_path,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check breadcrumb segments - can navigate to any parent directory
+        if let Some((path, bounds)) = self.breadcrumb.segment_at_point(pos) {
+            // Don't target current directory
+            if let Some(pane) = self.focused_pane() {
+                if let Some(tab) = pane.active_tab() {
+                    if tab.current_path() != &path {
+                        return Some(DragTarget::Breadcrumb { path, bounds });
+                    }
+                }
+            }
+        }
+
+        // Check directory entries in the current view
+        if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                if let Some((entry, bounds)) = tab.entry_bounds_at_point(pos) {
+                    // Only directories are valid drop targets
+                    if entry.is_dir() {
+                        // Don't allow dropping on itself or a dragged item
+                        if !dragged_paths.iter().any(|p| p == &entry.path) {
+                            return Some(DragTarget::Directory {
+                                path: entry.path.clone(),
+                                bounds,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Show the context menu at the given position.
@@ -2559,6 +2795,7 @@ impl App {
         self.status_bar.set_view_mode(mode.name());
         self.sync_toolbar_view();
         self.sync_toolbar_icon_size();
+        self.sync_breadcrumb();
         self.update_status_bar();
     }
 
@@ -2823,6 +3060,9 @@ impl App {
         // Draw drag label overlay (on top of other UI)
         self.render_drag_label()?;
 
+        // Draw file drag overlay (drag label and target highlight)
+        self.render_file_drag()?;
+
         // Draw help modal overlay (on top of everything)
         self.help_modal.render(&self.renderer)?;
 
@@ -2901,6 +3141,96 @@ impl App {
 
         // Draw the text
         self.renderer.text(label, (label_x + 14) as f64, label_y as f64, &text_style)?;
+
+        Ok(())
+    }
+
+    /// Render file drag overlay (drag label and target highlight).
+    fn render_file_drag(&self) -> Result<()> {
+        // Only render if file drag is actively dragging
+        if !self.file_drag.is_dragging() {
+            return Ok(());
+        }
+
+        let theme = self.renderer.theme();
+
+        // Render target highlight if hovering and highlight should be shown
+        if self.file_drag.should_show_highlight() {
+            if let Some(target) = self.file_drag.current_target() {
+                match target {
+                    DragTarget::Directory { bounds, .. } => {
+                        // Draw highlight rectangle around the directory
+                        let highlight_color = theme.selection_background.with_alpha(0.3);
+                        self.renderer.fill_rect(*bounds, highlight_color)?;
+                        self.renderer.stroke_rect(*bounds, theme.selection_background, 2.0)?;
+                    }
+                    DragTarget::Tab { index, .. } => {
+                        // Draw highlight under the tab
+                        if let Some(tab_bounds) = self.tab_bar.tab_bounds_at(*index) {
+                            let highlight_color = theme.selection_background.with_alpha(0.3);
+                            self.renderer.fill_rect(tab_bounds, highlight_color)?;
+                            self.renderer.stroke_rect(tab_bounds, theme.selection_background, 2.0)?;
+                        }
+                    }
+                    DragTarget::Breadcrumb { bounds, .. } => {
+                        // Draw highlight around the breadcrumb segment
+                        let highlight_color = theme.selection_background.with_alpha(0.3);
+                        self.renderer.fill_rect(*bounds, highlight_color)?;
+                        self.renderer.stroke_rect(*bounds, theme.selection_background, 2.0)?;
+                    }
+                }
+            }
+        }
+
+        // Render drag label at cursor
+        if let (Some(paths), Some(pos)) = (self.file_drag.dragged_paths(), self.file_drag.current_pos()) {
+            let count = paths.len();
+            let label = if count == 1 {
+                paths.first()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "1 item".to_string())
+            } else {
+                format!("{} items", count)
+            };
+
+            // Create text style for the drag label
+            let text_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size)
+                .color(theme.item_foreground);
+
+            // Measure the text to size the background
+            let text_size = self.renderer.measure_text(&label, &text_style)?;
+
+            // Position the label slightly offset from the cursor
+            let label_x = pos.x + 16;
+            let label_y = pos.y + 8;
+            let padding = 8;
+
+            // Draw background
+            let bg_rect = Rect::new(
+                label_x - padding,
+                label_y - padding / 2,
+                text_size.width + (padding * 2) as u32,
+                text_size.height + padding as u32,
+            );
+
+            // Semi-transparent dark background
+            let bg_color = gartk_core::Color::from_u8(40, 40, 45, 230);
+            self.renderer.fill_rect(bg_rect, bg_color)?;
+
+            // Border
+            let border_color = theme.selection_background.with_alpha(0.8);
+            self.renderer.stroke_rect(bg_rect, border_color, 1.0)?;
+
+            // File icon prefix
+            let icon_style = text_style.clone().color(theme.selection_background);
+            self.renderer.text("≡", label_x as f64, label_y as f64, &icon_style)?;
+
+            // Draw the text
+            self.renderer.text(&label, (label_x + 14) as f64, label_y as f64, &text_style)?;
+        }
 
         Ok(())
     }

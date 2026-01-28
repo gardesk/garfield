@@ -2,6 +2,7 @@
 
 pub mod clipboard;
 pub mod entry;
+pub mod file_drag;
 pub mod history;
 pub mod image_preview;
 pub mod operations;
@@ -15,6 +16,7 @@ pub use clipboard::{Clipboard, ClipboardOperation};
 pub use entry::{
     read_directory, sort_entries, EntryType, FileEntry, SortDirection, SortOrder,
 };
+pub use file_drag::{DragTarget, FileDragController, FileDragState, FlashState};
 pub use history::History;
 pub use image_preview::{is_supported_image, ImagePreview, ImagePreviewLoader, ImagePreviewResult};
 pub use operations::{

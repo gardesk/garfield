@@ -295,6 +295,11 @@ impl TabBar {
         None
     }
 
+    /// Get the bounds for a tab at the given index.
+    pub fn tab_bounds_at(&self, index: usize) -> Option<Rect> {
+        self.tab_bounds.get(index).copied()
+    }
+
     /// Render the tab bar.
     pub fn render(&self, renderer: &Renderer) -> anyhow::Result<()> {
         let theme = renderer.theme();

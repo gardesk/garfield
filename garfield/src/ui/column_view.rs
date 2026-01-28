@@ -675,6 +675,66 @@ impl ColumnView {
         None
     }
 
+    /// Get entry and its bounds at a point.
+    pub fn entry_bounds_at_point(&self, pos: Point) -> Option<(&FileEntry, Rect)> {
+        // Check current column (main selection column)
+        if self.current_column.bounds.contains_point(pos) {
+            let visible = self.visible_entries();
+            let visible_rows = self.current_column.visible_rows();
+
+            for i in self.current_column.scroll_offset..(self.current_column.scroll_offset + visible_rows).min(visible.len()) {
+                let y = self.current_column.bounds.y + ((i - self.current_column.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                let row = Rect::new(self.current_column.bounds.x, y, self.current_column.bounds.width, ROW_HEIGHT);
+
+                if row.contains_point(pos) {
+                    if let Some(entry) = visible.get(i).copied() {
+                        return Some((entry, row));
+                    }
+                }
+            }
+        }
+
+        // Check parent column
+        if let Some(ref parent) = self.parent_column {
+            if parent.bounds.contains_point(pos) {
+                let visible = parent.visible_entries(self.show_hidden);
+                let visible_rows = parent.visible_rows();
+
+                for i in parent.scroll_offset..(parent.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = parent.bounds.y + ((i - parent.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(parent.bounds.x, y, parent.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        if let Some(entry) = visible.get(i).copied() {
+                            return Some((entry, row));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check preview column
+        if let Some(ref preview) = self.preview_column {
+            if preview.bounds.contains_point(pos) {
+                let visible = preview.visible_entries(self.show_hidden);
+                let visible_rows = preview.visible_rows();
+
+                for i in preview.scroll_offset..(preview.scroll_offset + visible_rows).min(visible.len()) {
+                    let y = preview.bounds.y + ((i - preview.scroll_offset) as i32 * ROW_HEIGHT as i32);
+                    let row = Rect::new(preview.bounds.x, y, preview.bounds.width, ROW_HEIGHT);
+
+                    if row.contains_point(pos) {
+                        if let Some(entry) = visible.get(i).copied() {
+                            return Some((entry, row));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Handle click in any column. Returns click result.
     pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> ColumnClickResult {
         // Check parent column click - navigate to clicked directory

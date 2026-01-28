@@ -112,6 +112,21 @@ impl Breadcrumb {
         None
     }
 
+    /// Get segment path and bounds at a point (for drag target detection).
+    pub fn segment_at_point(&self, pos: Point) -> Option<(PathBuf, Rect)> {
+        if !self.bounds.contains_point(pos) {
+            return None;
+        }
+
+        for segment in &self.segments {
+            if segment.bounds.contains_point(pos) {
+                return Some((segment.path.clone(), segment.bounds));
+            }
+        }
+
+        None
+    }
+
     /// Clear hover state.
     pub fn clear_hover(&mut self) {
         self.hovered = None;

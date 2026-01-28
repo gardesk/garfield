@@ -119,6 +119,12 @@ impl Tab {
     /// Set the view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         self.view_mode = mode;
+
+        // Sync column view with current path when switching to columns mode
+        if mode == ViewMode::Columns {
+            let current_path = self.history.current().clone();
+            self.column_view.set_path(&current_path, self.sort_order, self.sort_direction);
+        }
     }
 
     /// Cycle icon size in grid view.
@@ -258,12 +264,26 @@ impl Tab {
         }
     }
 
+    /// Check if a path is in the current selection.
+    pub fn is_path_selected(&self, path: &std::path::Path) -> bool {
+        self.selected_paths().iter().any(|p| p == path)
+    }
+
     /// Get the entry at the given position (for drag detection).
     pub fn entry_at_point(&self, pos: Point) -> Option<&FileEntry> {
         match self.view_mode {
             ViewMode::List => self.list_view.entry_at_point(pos),
             ViewMode::Grid => self.grid_view.entry_at_point(pos),
             ViewMode::Columns => self.column_view.entry_at_point(pos),
+        }
+    }
+
+    /// Get entry and its bounds at a point.
+    pub fn entry_bounds_at_point(&self, pos: Point) -> Option<(&FileEntry, Rect)> {
+        match self.view_mode {
+            ViewMode::List => self.list_view.entry_bounds_at_point(pos),
+            ViewMode::Grid => self.grid_view.entry_bounds_at_point(pos),
+            ViewMode::Columns => self.column_view.entry_bounds_at_point(pos),
         }
     }
 

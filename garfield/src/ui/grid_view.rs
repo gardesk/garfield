@@ -608,6 +608,28 @@ impl GridView {
         None
     }
 
+    /// Get entry and its bounds at a point.
+    pub fn entry_bounds_at_point(&self, pos: Point) -> Option<(&FileEntry, Rect)> {
+        if !self.bounds.contains_point(pos) {
+            return None;
+        }
+
+        let visible_count = self.visible_count();
+        let start_index = self.scroll_offset * self.columns;
+        let end_index = (start_index + self.visible_rows() * self.columns).min(visible_count);
+
+        for i in start_index..end_index {
+            let bounds = self.cell_bounds(i);
+            if bounds.contains_point(pos) {
+                if let Some(entry) = self.visible_entry(i) {
+                    return Some((entry, bounds));
+                }
+            }
+        }
+
+        None
+    }
+
     /// Handle cell click. Returns index of clicked cell if valid.
     pub fn on_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
         if !self.bounds.contains_point(pos) {

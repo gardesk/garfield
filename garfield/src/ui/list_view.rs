@@ -529,6 +529,25 @@ impl ListView {
         visible.get(row_index).copied()
     }
 
+    /// Get entry and its bounds at a point.
+    pub fn entry_bounds_at_point(&self, pos: Point) -> Option<(&FileEntry, Rect)> {
+        let content = self.content_bounds();
+        if !content.contains_point(pos) {
+            return None;
+        }
+
+        let relative_y = pos.y - content.y;
+        let row_index = self.scroll_offset + (relative_y / ROW_HEIGHT as i32) as usize;
+
+        let visible = self.visible_entries();
+        if let Some(entry) = visible.get(row_index).copied() {
+            let y = content.y + ((row_index - self.scroll_offset) as i32 * ROW_HEIGHT as i32);
+            let row_bounds = Rect::new(content.x, y, content.width, ROW_HEIGHT);
+            return Some((entry, row_bounds));
+        }
+        None
+    }
+
     /// Handle row click. Returns index of clicked row if valid.
     pub fn on_row_click(&mut self, pos: Point, modifiers: &Modifiers) -> Option<usize> {
         let content = self.content_bounds();
