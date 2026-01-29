@@ -1,0 +1,28 @@
+[package]
+name = "garfield-portal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "XDG Desktop Portal backend for garfield file picker"
+
+[[bin]]
+name = "garfield-portal"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio.workspace = true
+
+# D-Bus
+zbus.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# CLI
+clap.workspace = true

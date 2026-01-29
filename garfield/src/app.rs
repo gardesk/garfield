@@ -1,12 +1,13 @@
 //! Application state and event loop.
 
+use crate::PickerConfig;
 use garfield::core::{
     Clipboard, ClipboardOperation, DragTarget, FileOperation, FileDragController, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, UndoStack,
     copy_files, move_files, delete_files, create_directory,
-    trash_files, restore_from_trash,
+    trash_files, restore_from_trash, matches_any_filter,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, IconSize, InputDialog, InputResult, Pane, ProgressDialog, Sidebar, StatusBar, TabBar, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, IconSize, InputDialog, InputResult, Pane, PaneToolbarClick, PickerToolbar, PickerToolbarClick, ProgressDialog, Sidebar, StatusBar, TabBar, TabBarClickResult, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT, PICKER_TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, TextStyle};
@@ -104,6 +105,10 @@ pub struct App {
     pdf_preview_loader: PdfPreviewLoader,
     /// X11 clipboard manager for system clipboard integration.
     x11_clipboard: ClipboardManager,
+    /// Picker mode configuration (None for normal browser).
+    picker_config: PickerConfig,
+    /// Picker toolbar (only used in picker mode).
+    picker_toolbar: Option<PickerToolbar>,
 }
 
 /// State for a paste operation with conflicts.
@@ -120,31 +125,48 @@ struct PendingPaste {
 
 impl App {
     /// Create a new application.
-    pub fn new(start_dir: Option<PathBuf>) -> Result<Self> {
+    pub fn new(start_dir: Option<PathBuf>, picker_config: PickerConfig) -> Result<Self> {
         // Connect to X11
         let conn = Connection::connect(None)?;
 
         // Get primary monitor for window sizing
         let monitor = gartk_x11::primary_monitor(&conn)?;
 
-        // Calculate window size (70% of screen)
-        let width = (monitor.rect.width as f64 * 0.7) as u32;
-        let height = (monitor.rect.height as f64 * 0.7) as u32;
+        // Calculate window size (70% of screen, smaller for picker mode)
+        let scale = if picker_config.is_picker() { 0.5 } else { 0.7 };
+        let width = (monitor.rect.width as f64 * scale) as u32;
+        let height = (monitor.rect.height as f64 * scale) as u32;
         let x = monitor.rect.x + (monitor.rect.width as i32 - width as i32) / 2;
         let y = monitor.rect.y + (monitor.rect.height as i32 - height as i32) / 2;
 
-        // Create window
-        let window = Window::create(
-            conn.clone(),
-            WindowConfig::default()
-                .title("garfield")
-                .class("garfield")
-                .position(x, y)
-                .size(width, height)
-                .transparent(false),
-        )?;
+        // Window title depends on mode
+        let title = if picker_config.is_picker() {
+            picker_config.title.clone().unwrap_or_else(|| {
+                if picker_config.mode.is_directory_mode() {
+                    "Select Folder".to_string()
+                } else {
+                    "Open File".to_string()
+                }
+            })
+        } else {
+            "garfield".to_string()
+        };
 
-        window.focus()?;
+        // Create window - use Dialog type for picker mode
+        let mut window_config = WindowConfig::default()
+            .title(&title)
+            .class("garfield")
+            .position(x, y)
+            .size(width, height)
+            .transparent(false);
+
+        // Use Dialog window type for picker mode (better focus handling)
+        if picker_config.is_picker() {
+            window_config = window_config.window_type(gartk_x11::WindowType::Dialog);
+        }
+
+        let window = Window::create(conn.clone(), window_config)?;
+        conn.flush()?;
 
         // Create X11 clipboard manager for system clipboard integration
         let x11_clipboard = ClipboardManager::new(conn.clone(), window.id())?;
@@ -173,6 +195,26 @@ impl App {
             TOOLBAR_HEIGHT,
         );
         let toolbar = Toolbar::new(toolbar_bounds);
+
+        // Create picker toolbar at BOTTOM of window (only if in picker mode)
+        let picker_toolbar = if picker_config.is_picker() {
+            let picker_toolbar_bounds = Rect::new(
+                sidebar_w as i32,
+                (height - PICKER_TOOLBAR_HEIGHT) as i32,
+                width - sidebar_w,
+                PICKER_TOOLBAR_HEIGHT,
+            );
+            let mut pt = PickerToolbar::new(picker_toolbar_bounds, picker_config.accept_label.clone());
+            // Set filter description if we have filters
+            let filters = picker_config.mode.filters();
+            if !filters.is_empty() {
+                let desc = format!("Filter: {}", filters.join(", "));
+                pt.set_filter_description(Some(desc));
+            }
+            Some(pt)
+        } else {
+            None
+        };
 
         // Create breadcrumb (below toolbar)
         let breadcrumb_bounds = Rect::new(
@@ -227,11 +269,17 @@ impl App {
         let app_picker = AppPickerDialog::new(Rect::new(0, 0, width, height));
 
         // Content area bounds (for panes)
+        // In picker mode, picker toolbar replaces status bar at bottom
+        let footer_height = if picker_config.is_picker() {
+            PICKER_TOOLBAR_HEIGHT
+        } else {
+            STATUS_BAR_HEIGHT
+        };
         let content_bounds = Rect::new(
             sidebar_w as i32,
             header_height as i32,
             width - sidebar_w,
-            height - header_height - STATUS_BAR_HEIGHT,
+            height - header_height - footer_height,
         );
 
         // Create root pane with initial tab
@@ -286,6 +334,8 @@ impl App {
             image_preview_loader: ImagePreviewLoader::new(),
             pdf_preview_loader: PdfPreviewLoader::new(),
             x11_clipboard,
+            picker_config,
+            picker_toolbar,
         };
 
         app.update_status_bar();
@@ -301,6 +351,96 @@ impl App {
     /// Get the focused pane (mutable).
     fn focused_pane_mut(&mut self) -> Option<&mut Pane> {
         self.root_pane.leaf_by_id_mut(self.focused_pane_id)
+    }
+
+    /// Check if the current selection is valid for picker mode.
+    fn has_valid_picker_selection(&self) -> bool {
+        let Some(pane) = self.focused_pane() else {
+            return false;
+        };
+        let Some(tab) = pane.active_tab() else {
+            return false;
+        };
+
+        let selected = tab.selected_entries();
+        let filters = self.picker_config.mode.filters();
+
+        // In directory mode, we can always accept (use current directory if nothing selected)
+        if self.picker_config.mode.is_directory_mode() {
+            // If nothing selected, the current directory is the selection
+            if selected.is_empty() {
+                return true;
+            }
+            // Otherwise, at least one directory must be selected
+            return selected.iter().any(|e| e.is_dir());
+        }
+
+        // In file mode, we need at least one file selected that matches filters
+        // If multiple is disabled, we need exactly one matching file
+        let matching_file_count = selected.iter()
+            .filter(|e| !e.is_dir() && matches_any_filter(e, filters))
+            .count();
+
+        if matching_file_count == 0 {
+            return false;
+        }
+
+        if !self.picker_config.mode.allows_multiple() && matching_file_count > 1 {
+            return false;
+        }
+
+        true
+    }
+
+    /// Get the selected paths for picker mode.
+    fn get_picker_selection(&self) -> Vec<PathBuf> {
+        let Some(pane) = self.focused_pane() else {
+            return Vec::new();
+        };
+        let Some(tab) = pane.active_tab() else {
+            return Vec::new();
+        };
+
+        let filters = self.picker_config.mode.filters();
+
+        if self.picker_config.mode.is_directory_mode() {
+            // In directory mode, return selected directories or current directory
+            let dirs: Vec<_> = tab.selected_entries().iter()
+                .filter(|e| e.is_dir())
+                .map(|e| e.path.clone())
+                .collect();
+
+            if dirs.is_empty() {
+                // Return current directory
+                vec![tab.current_path().to_path_buf()]
+            } else {
+                dirs
+            }
+        } else {
+            // In file mode, return selected files that match filters
+            tab.selected_entries().iter()
+                .filter(|e| !e.is_dir() && matches_any_filter(e, filters))
+                .map(|e| e.path.clone())
+                .collect()
+        }
+    }
+
+    /// Output picker selection and exit.
+    fn accept_picker_selection(&mut self) {
+        let paths = self.get_picker_selection();
+
+        // Output paths to stdout (one per line)
+        for path in &paths {
+            println!("{}", path.display());
+        }
+
+        self.should_quit = true;
+    }
+
+    /// Cancel picker and exit with no output.
+    fn cancel_picker(&mut self) {
+        // Exit with code 1 to indicate cancellation
+        self.should_quit = true;
     }
 
     /// Run the application event loop.
@@ -527,19 +667,48 @@ impl App {
                 return;
             }
 
-            // Handle tab bar close button clicks (non-drag)
-            if let Some((tab_index, is_close)) = self.tab_bar.on_click(pos) {
-                if is_close {
-                    self.close_tab(tab_index);
+            // Handle tab bar clicks (non-drag)
+            match self.tab_bar.on_click(pos) {
+                TabBarClickResult::Tab(tab_index, is_close) => {
+                    if is_close {
+                        self.close_tab(tab_index);
+                    }
+                    // Tab selection happens on mouse release if not dragged
+                    return;
                 }
-                // Tab selection happens on mouse release if not dragged
+                TabBarClickResult::NewTab => {
+                    self.new_tab();
+                    return;
+                }
+                TabBarClickResult::None => {}
+            }
+        }
+
+        // Check picker toolbar clicks (if in picker mode)
+        if let Some(picker_toolbar) = &self.picker_toolbar {
+            match picker_toolbar.on_click(pos) {
+                PickerToolbarClick::Accept => {
+                    self.accept_picker_selection();
+                    return;
+                }
+                PickerToolbarClick::Cancel => {
+                    self.cancel_picker();
+                    return;
+                }
+                PickerToolbarClick::None => {}
+            }
+        } else {
+            // Check normal toolbar clicks
+            if let Some(action) = self.toolbar.on_click(pos) {
+                self.handle_toolbar_action(action);
                 return;
             }
         }
 
-        // Check toolbar clicks
-        if let Some(action) = self.toolbar.on_click(pos) {
-            self.handle_toolbar_action(action);
+        // Check pane toolbar clicks (view mode buttons)
+        if let PaneToolbarClick::ViewMode(_mode) = self.root_pane.on_toolbar_click(pos) {
+            self.sync_toolbar_view();
+            self.update_status_bar();
             return;
         }
 
@@ -888,10 +1057,15 @@ impl App {
         }
 
         // Check hover states - only redraw if any changed
-        needs_redraw |= self.toolbar.on_mouse_move(pos);
+        if let Some(picker_toolbar) = &mut self.picker_toolbar {
+            needs_redraw |= picker_toolbar.on_mouse_move(pos);
+        } else {
+            needs_redraw |= self.toolbar.on_mouse_move(pos);
+        }
         needs_redraw |= self.breadcrumb.on_mouse_move(pos);
         needs_redraw |= self.sidebar.on_mouse_move(pos);
         needs_redraw |= self.tab_bar.on_mouse_move(pos);
+        needs_redraw |= self.root_pane.on_toolbar_mouse_move(pos);
 
         let mut is_dragging = false;
         let mut selection_count = 0;
@@ -1000,6 +1174,12 @@ impl App {
         // Cancel file drag on Escape
         if *key == Key::Escape && self.file_drag.is_active() {
             self.file_drag.cancel();
+            return;
+        }
+
+        // Handle Escape in picker mode (cancel)
+        if *key == Key::Escape && self.picker_config.is_picker() {
+            self.cancel_picker();
             return;
         }
 
@@ -1350,13 +1530,7 @@ impl App {
 
     /// Create a new tab in the focused pane.
     fn new_tab(&mut self) {
-        let path = if let Some(pane) = self.focused_pane() {
-            pane.active_tab().map(|t| t.current_path().clone())
-        } else {
-            None
-        };
-
-        let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
 
         if let Some(pane) = self.focused_pane_mut() {
             pane.add_tab(path);
@@ -1438,17 +1612,21 @@ impl App {
 
     /// Split the focused pane horizontally.
     fn split_horizontal(&mut self) {
-        let path = if let Some(pane) = self.focused_pane() {
-            pane.active_tab().map(|t| t.current_path().clone())
+        let (path, view_mode) = if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                (Some(tab.current_path().clone()), Some(tab.view_mode()))
+            } else {
+                (None, None)
+            }
         } else {
-            None
+            (None, None)
         };
 
         let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let new_id = self.next_pane_id;
 
         if let Some(pane) = self.focused_pane_mut() {
-            if pane.split(SplitDirection::Horizontal, path, new_id).is_some() {
+            if pane.split(SplitDirection::Horizontal, path, new_id, view_mode).is_some() {
                 self.next_pane_id += 1;
                 self.focused_pane_id = new_id;
             }
@@ -1461,17 +1639,21 @@ impl App {
 
     /// Split the focused pane vertically.
     fn split_vertical(&mut self) {
-        let path = if let Some(pane) = self.focused_pane() {
-            pane.active_tab().map(|t| t.current_path().clone())
+        let (path, view_mode) = if let Some(pane) = self.focused_pane() {
+            if let Some(tab) = pane.active_tab() {
+                (Some(tab.current_path().clone()), Some(tab.view_mode()))
+            } else {
+                (None, None)
+            }
         } else {
-            None
+            (None, None)
         };
 
         let path = path.unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let new_id = self.next_pane_id;
 
         if let Some(pane) = self.focused_pane_mut() {
-            if pane.split(SplitDirection::Vertical, path, new_id).is_some() {
+            if pane.split(SplitDirection::Vertical, path, new_id, view_mode).is_some() {
                 self.next_pane_id += 1;
                 self.focused_pane_id = new_id;
             }
@@ -1553,6 +1735,29 @@ impl App {
     /// Enter the selected entry.
     fn enter_selected(&mut self) {
         self.status_bar.clear_status_message();
+
+        // In picker mode, check if we should accept the selection instead of navigating
+        if self.picker_config.is_picker() {
+            if let Some(pane) = self.focused_pane() {
+                if let Some(tab) = pane.active_tab() {
+                    let selected = tab.selected_entries();
+                    if !selected.is_empty() {
+                        // If it's a directory in non-directory mode, navigate into it
+                        if !self.picker_config.mode.is_directory_mode() {
+                            let first = &selected[0];
+                            if first.is_dir() {
+                                // Fall through to normal enter behavior
+                            } else {
+                                // File selected - accept it
+                                self.accept_picker_selection();
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.enter_selected();
@@ -2962,12 +3167,13 @@ impl App {
             TAB_BAR_HEIGHT,
         ));
 
-        self.toolbar.set_bounds(Rect::new(
+        let toolbar_bounds = Rect::new(
             sidebar_w as i32,
             TAB_BAR_HEIGHT as i32,
             width - sidebar_w,
             TOOLBAR_HEIGHT,
-        ));
+        );
+        self.toolbar.set_bounds(toolbar_bounds);
 
         let breadcrumb_bounds = Rect::new(
             sidebar_w as i32,
@@ -2978,20 +3184,38 @@ impl App {
         self.breadcrumb.set_bounds(breadcrumb_bounds);
         self.address_bar.set_bounds(breadcrumb_bounds);
 
+        // Calculate footer height (status bar + picker toolbar if present)
+        let footer_height = if self.picker_toolbar.is_some() {
+            PICKER_TOOLBAR_HEIGHT  // Picker toolbar replaces status bar
+        } else {
+            STATUS_BAR_HEIGHT
+        };
+
         let content_bounds = Rect::new(
             sidebar_w as i32,
             header_height as i32,
             width - sidebar_w,
-            height - header_height - STATUS_BAR_HEIGHT,
+            height - header_height - footer_height,
         );
         self.root_pane.set_bounds(content_bounds);
 
-        self.status_bar.set_bounds(Rect::new(
-            sidebar_w as i32,
-            (height - STATUS_BAR_HEIGHT) as i32,
-            width - sidebar_w,
-            STATUS_BAR_HEIGHT,
-        ));
+        // Update picker toolbar bounds at bottom (if in picker mode)
+        if let Some(ref mut picker_toolbar) = self.picker_toolbar {
+            picker_toolbar.set_bounds(Rect::new(
+                sidebar_w as i32,
+                (height - PICKER_TOOLBAR_HEIGHT) as i32,
+                width - sidebar_w,
+                PICKER_TOOLBAR_HEIGHT,
+            ));
+        } else {
+            // Only show status bar when not in picker mode
+            self.status_bar.set_bounds(Rect::new(
+                sidebar_w as i32,
+                (height - STATUS_BAR_HEIGHT) as i32,
+                width - sidebar_w,
+                STATUS_BAR_HEIGHT,
+            ));
+        }
 
         self.help_modal.set_bounds(Rect::new(0, 0, width, height));
         self.confirm_dialog.set_bounds(Rect::new(0, 0, width, height));
@@ -3018,7 +3242,7 @@ impl App {
         // Draw tab bar
         self.tab_bar.render(&self.renderer)?;
 
-        // Update and draw toolbar
+        // Update and draw toolbar (or picker toolbar)
         let (can_back, can_forward) = if let Some(pane) = self.focused_pane() {
             if let Some(tab) = pane.active_tab() {
                 (tab.can_go_back(), tab.can_go_forward())
@@ -3028,6 +3252,8 @@ impl App {
         } else {
             (false, false)
         };
+
+        // Always render the regular toolbar
         self.toolbar.set_nav_state(can_back, can_forward);
         self.toolbar.render(&self.renderer)?;
 
@@ -3051,8 +3277,17 @@ impl App {
         // Draw pane content
         self.root_pane.render(&self.renderer, Some(self.focused_pane_id))?;
 
-        // Draw status bar
-        self.status_bar.render(&self.renderer)?;
+        // Draw status bar or picker toolbar at bottom
+        if self.picker_toolbar.is_some() {
+            // Picker mode: draw picker toolbar instead of status bar
+            let has_valid_selection = self.has_valid_picker_selection();
+            let picker_toolbar = self.picker_toolbar.as_mut().unwrap();
+            picker_toolbar.set_accept_enabled(has_valid_selection);
+            picker_toolbar.render(&self.renderer)?;
+        } else {
+            // Normal mode: draw status bar
+            self.status_bar.render(&self.renderer)?;
+        }
 
         // Draw toolbar tooltip overlay (on top of other UI)
         self.toolbar.render_tooltip_overlay(&self.renderer)?;

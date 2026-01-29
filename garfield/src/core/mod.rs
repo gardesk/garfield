@@ -14,7 +14,7 @@ pub mod undo;
 
 pub use clipboard::{Clipboard, ClipboardOperation};
 pub use entry::{
-    read_directory, sort_entries, EntryType, FileEntry, SortDirection, SortOrder,
+    matches_any_filter, matches_filter, read_directory, sort_entries, EntryType, FileEntry, SortDirection, SortOrder,
 };
 pub use file_drag::{DragTarget, FileDragController, FileDragState, FlashState};
 pub use history::History;

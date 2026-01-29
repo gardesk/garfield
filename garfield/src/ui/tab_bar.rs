@@ -18,6 +18,20 @@ const MAX_TAB_WIDTH: u32 = 200;
 /// Padding inside tabs.
 const TAB_PADDING: u32 = 12;
 
+/// Width of the new tab button.
+const NEW_TAB_BUTTON_WIDTH: u32 = 32;
+
+/// Result of clicking on the tab bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabBarClickResult {
+    /// Clicked on a tab (index, is_close_button).
+    Tab(usize, bool),
+    /// Clicked on the new tab button.
+    NewTab,
+    /// No click target.
+    None,
+}
+
 /// Information about a tab for rendering.
 #[derive(Clone)]
 pub struct TabInfo {
@@ -39,8 +53,12 @@ pub struct TabBar {
     hovered_tab: Option<usize>,
     /// Hovered close button index.
     hovered_close: Option<usize>,
+    /// Hovered new tab button.
+    hovered_new_tab: bool,
     /// Cached tab bounds.
     tab_bounds: Vec<Rect>,
+    /// Bounds of the new tab button.
+    new_tab_bounds: Option<Rect>,
     /// Tab being dragged (index).
     dragging_tab: Option<usize>,
     /// Drag start position.
@@ -60,7 +78,9 @@ impl TabBar {
             active_index: 0,
             hovered_tab: None,
             hovered_close: None,
+            hovered_new_tab: false,
             tab_bounds: Vec::new(),
+            new_tab_bounds: None,
             dragging_tab: None,
             drag_start: None,
             drag_active: false,
@@ -94,12 +114,22 @@ impl TabBar {
     /// Recalculate tab bounds based on number of tabs.
     fn recalculate_tab_bounds(&mut self) {
         self.tab_bounds.clear();
+        self.new_tab_bounds = None;
+
+        // Reserve space for the new tab button
+        let available_width = self.bounds.width.saturating_sub(NEW_TAB_BUTTON_WIDTH + 4);
 
         if self.tabs.is_empty() {
+            // Even with no tabs, show the + button
+            self.new_tab_bounds = Some(Rect::new(
+                self.bounds.x + 4,
+                self.bounds.y + 4,
+                NEW_TAB_BUTTON_WIDTH,
+                TAB_BAR_HEIGHT - 8,
+            ));
             return;
         }
 
-        let available_width = self.bounds.width;
         let tab_count = self.tabs.len() as u32;
 
         // Calculate tab width (equal distribution, clamped)
@@ -111,6 +141,14 @@ impl TabBar {
             self.tab_bounds.push(Rect::new(x, self.bounds.y, tab_width, TAB_BAR_HEIGHT));
             x += tab_width as i32;
         }
+
+        // Position the new tab button after the last tab
+        self.new_tab_bounds = Some(Rect::new(
+            x + 4,
+            self.bounds.y + 4,
+            NEW_TAB_BUTTON_WIDTH,
+            TAB_BAR_HEIGHT - 8,
+        ));
     }
 
     /// Get the close button bounds for a tab.
@@ -129,12 +167,26 @@ impl TabBar {
     pub fn on_mouse_move(&mut self, pos: Point) -> bool {
         let old_hovered_tab = self.hovered_tab;
         let old_hovered_close = self.hovered_close;
+        let old_hovered_new_tab = self.hovered_new_tab;
 
         self.hovered_tab = None;
         self.hovered_close = None;
+        self.hovered_new_tab = false;
 
         if !self.bounds.contains_point(pos) {
-            return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
+            return self.hovered_tab != old_hovered_tab
+                || self.hovered_close != old_hovered_close
+                || self.hovered_new_tab != old_hovered_new_tab;
+        }
+
+        // Check new tab button
+        if let Some(new_tab_bounds) = self.new_tab_bounds {
+            if new_tab_bounds.contains_point(pos) {
+                self.hovered_new_tab = true;
+                return self.hovered_tab != old_hovered_tab
+                    || self.hovered_close != old_hovered_close
+                    || self.hovered_new_tab != old_hovered_new_tab;
+            }
         }
 
         for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
@@ -143,21 +195,34 @@ impl TabBar {
                 if let Some(close_bounds) = self.close_button_bounds(i) {
                     if close_bounds.contains_point(pos) {
                         self.hovered_close = Some(i);
-                        return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
+                        return self.hovered_tab != old_hovered_tab
+                            || self.hovered_close != old_hovered_close
+                            || self.hovered_new_tab != old_hovered_new_tab;
                     }
                 }
                 self.hovered_tab = Some(i);
-                return self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close;
+                return self.hovered_tab != old_hovered_tab
+                    || self.hovered_close != old_hovered_close
+                    || self.hovered_new_tab != old_hovered_new_tab;
             }
         }
 
-        self.hovered_tab != old_hovered_tab || self.hovered_close != old_hovered_close
+        self.hovered_tab != old_hovered_tab
+            || self.hovered_close != old_hovered_close
+            || self.hovered_new_tab != old_hovered_new_tab
     }
 
-    /// Handle click. Returns (clicked_tab, is_close_button).
-    pub fn on_click(&self, pos: Point) -> Option<(usize, bool)> {
+    /// Handle click. Returns the click result.
+    pub fn on_click(&self, pos: Point) -> TabBarClickResult {
         if !self.bounds.contains_point(pos) {
-            return None;
+            return TabBarClickResult::None;
+        }
+
+        // Check new tab button
+        if let Some(new_tab_bounds) = self.new_tab_bounds {
+            if new_tab_bounds.contains_point(pos) {
+                return TabBarClickResult::NewTab;
+            }
         }
 
         for (i, tab_bounds) in self.tab_bounds.iter().enumerate() {
@@ -165,20 +230,21 @@ impl TabBar {
                 // Check if clicking close button
                 if let Some(close_bounds) = self.close_button_bounds(i) {
                     if close_bounds.contains_point(pos) {
-                        return Some((i, true));
+                        return TabBarClickResult::Tab(i, true);
                     }
                 }
-                return Some((i, false));
+                return TabBarClickResult::Tab(i, false);
             }
         }
 
-        None
+        TabBarClickResult::None
     }
 
     /// Clear hover state.
     pub fn clear_hover(&mut self) {
         self.hovered_tab = None;
         self.hovered_close = None;
+        self.hovered_new_tab = false;
     }
 
     /// Start potential tab drag.
@@ -455,6 +521,43 @@ impl TabBar {
                     3.0,
                 )?;
             }
+        }
+
+        // Draw new tab button
+        if let Some(bounds) = self.new_tab_bounds {
+            // Background on hover
+            if self.hovered_new_tab {
+                renderer.fill_rounded_rect(bounds, 4.0, theme.item_background)?;
+            }
+
+            // Draw + symbol
+            let cx = bounds.x + bounds.width as i32 / 2;
+            let cy = bounds.y + bounds.height as i32 / 2;
+            let size = 6;
+            let color = if self.hovered_new_tab {
+                theme.foreground
+            } else {
+                theme.foreground.with_alpha(0.6)
+            };
+
+            // Horizontal line
+            renderer.line(
+                (cx - size) as f64,
+                cy as f64,
+                (cx + size) as f64,
+                cy as f64,
+                color,
+                1.5,
+            )?;
+            // Vertical line
+            renderer.line(
+                cx as f64,
+                (cy - size) as f64,
+                cx as f64,
+                (cy + size) as f64,
+                color,
+                1.5,
+            )?;
         }
 
         Ok(())

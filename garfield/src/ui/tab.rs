@@ -255,13 +255,18 @@ impl Tab {
         }
     }
 
+    /// Get all selected entries.
+    pub fn selected_entries(&self) -> Vec<&FileEntry> {
+        match self.view_mode {
+            ViewMode::List => self.list_view.selected_entries(),
+            ViewMode::Grid => self.grid_view.selected_entries(),
+            ViewMode::Columns => self.column_view.selected_entries(),
+        }
+    }
+
     /// Get paths of all selected entries.
     pub fn selected_paths(&self) -> Vec<std::path::PathBuf> {
-        match self.view_mode {
-            ViewMode::List => self.list_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
-            ViewMode::Grid => self.grid_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
-            ViewMode::Columns => self.column_view.selected_entries().iter().map(|e| e.path.clone()).collect(),
-        }
+        self.selected_entries().iter().map(|e| e.path.clone()).collect()
     }
 
     /// Check if a path is in the current selection.

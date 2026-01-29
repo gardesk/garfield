@@ -42,6 +42,9 @@ freedesktop_entry_parser.workspace = true
 # Fuzzy matching
 nucleo-matcher.workspace = true
 
+# CLI
+clap.workspace = true
+
 # IPC
 garfield-ipc.workspace = true
 

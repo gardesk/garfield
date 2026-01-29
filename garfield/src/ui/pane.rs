@@ -1,8 +1,8 @@
 //! Pane management with split support.
 
-use crate::ui::tab::Tab;
+use crate::ui::tab::{Tab, ViewMode};
 use gartk_core::{Point, Rect};
-use gartk_render::Renderer;
+use gartk_render::{Renderer, TextStyle};
 use std::path::PathBuf;
 
 /// Split direction for panes.
@@ -12,11 +12,26 @@ pub enum SplitDirection {
     Vertical,
 }
 
+/// Result of clicking on the pane toolbar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneToolbarClick {
+    /// Set view mode.
+    ViewMode(ViewMode),
+    /// No action.
+    None,
+}
+
 /// Minimum pane size (width or height).
 pub const MIN_PANE_SIZE: u32 = 100;
 
 /// Divider size for split panes.
 const DIVIDER_SIZE: u32 = 4;
+
+/// Height of the pane toolbar.
+const PANE_TOOLBAR_HEIGHT: u32 = 24;
+
+/// Width of each view mode button.
+const VIEW_BUTTON_WIDTH: u32 = 24;
 
 /// A pane that can be a leaf (with tabs) or a split (with two child panes).
 pub enum Pane {
@@ -26,10 +41,12 @@ pub enum Pane {
         tabs: Vec<Tab>,
         /// Active tab index.
         active_tab: usize,
-        /// Pane bounds.
+        /// Pane bounds (full bounds including toolbar).
         bounds: Rect,
         /// Unique pane ID.
         id: u32,
+        /// Hovered view mode button (0=List, 1=Grid, 2=Columns).
+        hovered_view_button: Option<usize>,
     },
     /// Split pane containing two child panes.
     Split {
@@ -49,13 +66,39 @@ pub enum Pane {
 impl Pane {
     /// Create a new leaf pane with a single tab.
     pub fn new_leaf(path: PathBuf, bounds: Rect, id: u32) -> Self {
-        let tab = Tab::new(path, bounds);
+        // Content bounds exclude the toolbar
+        let content_bounds = Self::content_bounds_from_pane_bounds(bounds);
+        let tab = Tab::new(path, content_bounds);
         Pane::Leaf {
             tabs: vec![tab],
             active_tab: 0,
             bounds,
             id,
+            hovered_view_button: None,
         }
+    }
+
+    /// Calculate content bounds (for tabs) from pane bounds, accounting for toolbar.
+    fn content_bounds_from_pane_bounds(bounds: Rect) -> Rect {
+        Rect::new(
+            bounds.x,
+            bounds.y + PANE_TOOLBAR_HEIGHT as i32,
+            bounds.width,
+            bounds.height.saturating_sub(PANE_TOOLBAR_HEIGHT),
+        )
+    }
+
+    /// Get the toolbar bounds for a leaf pane.
+    fn toolbar_bounds(bounds: Rect) -> Rect {
+        Rect::new(bounds.x, bounds.y, bounds.width, PANE_TOOLBAR_HEIGHT)
+    }
+
+    /// Get bounds for a view mode button (0=List, 1=Grid, 2=Columns).
+    fn view_button_bounds(bounds: Rect, index: usize) -> Rect {
+        let toolbar = Self::toolbar_bounds(bounds);
+        // Position buttons on the right side of the toolbar
+        let x = toolbar.x + toolbar.width as i32 - ((3 - index as i32) * VIEW_BUTTON_WIDTH as i32) - 4;
+        Rect::new(x, toolbar.y + 2, VIEW_BUTTON_WIDTH, PANE_TOOLBAR_HEIGHT - 4)
     }
 
     /// Get pane bounds.
@@ -71,8 +114,9 @@ impl Pane {
         match self {
             Pane::Leaf { bounds, tabs, .. } => {
                 *bounds = new_bounds;
+                let content_bounds = Self::content_bounds_from_pane_bounds(new_bounds);
                 for tab in tabs {
-                    tab.set_bounds(new_bounds);
+                    tab.set_bounds(content_bounds);
                 }
             }
             Pane::Split {
@@ -368,21 +412,30 @@ impl Pane {
 
     /// Split this pane. Only works on leaf panes.
     /// Returns the new pane ID if successful.
-    pub fn split(&mut self, direction: SplitDirection, new_path: PathBuf, new_id: u32) -> Option<u32> {
+    /// The new pane will inherit the specified view mode.
+    pub fn split(&mut self, direction: SplitDirection, new_path: PathBuf, new_id: u32, view_mode: Option<ViewMode>) -> Option<u32> {
         let current_bounds = self.bounds();
 
         match self {
-            Pane::Leaf { tabs, active_tab, bounds, id } => {
+            Pane::Leaf { tabs, active_tab, bounds, id, .. } => {
                 // Create new leaf from current state
                 let first_pane = Pane::Leaf {
                     tabs: std::mem::take(tabs),
                     active_tab: *active_tab,
                     bounds: *bounds,
                     id: *id,
+                    hovered_view_button: None,
                 };
 
                 // Create second leaf with new tab
-                let second_pane = Pane::new_leaf(new_path, *bounds, new_id);
+                let mut second_pane = Pane::new_leaf(new_path, *bounds, new_id);
+
+                // Set the view mode on the new pane's tab if specified
+                if let (Some(mode), Pane::Leaf { tabs, .. }) = (view_mode, &mut second_pane) {
+                    if let Some(tab) = tabs.first_mut() {
+                        tab.set_view_mode(mode);
+                    }
+                }
 
                 // Replace self with split
                 *self = Pane::Split {
@@ -405,7 +458,11 @@ impl Pane {
     /// Render the pane.
     pub fn render(&self, renderer: &Renderer, focused_id: Option<u32>) -> anyhow::Result<()> {
         match self {
-            Pane::Leaf { tabs, active_tab, bounds, id } => {
+            Pane::Leaf { tabs, active_tab, bounds, id, hovered_view_button } => {
+                // Render the pane toolbar
+                self.render_toolbar(renderer, *bounds, tabs.get(*active_tab), *hovered_view_button)?;
+
+                // Render the active tab
                 if let Some(tab) = tabs.get(*active_tab) {
                     tab.render(renderer)?;
                 }
@@ -413,11 +470,11 @@ impl Pane {
                 // Draw focus indicator if this pane is focused
                 if focused_id == Some(*id) {
                     let theme = renderer.theme();
-                    renderer.stroke_rect(*bounds, theme.selection_background, 2.0)?;
+                    let content_bounds = Self::content_bounds_from_pane_bounds(*bounds);
+                    renderer.stroke_rect(content_bounds, theme.selection_background, 2.0)?;
                 }
             }
             Pane::Split {
-                direction,
                 first,
                 second,
                 ..
@@ -431,6 +488,66 @@ impl Pane {
                     renderer.fill_rect(divider, theme.border)?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Render the pane toolbar with view mode buttons.
+    fn render_toolbar(&self, renderer: &Renderer, bounds: Rect, active_tab: Option<&Tab>, hovered_button: Option<usize>) -> anyhow::Result<()> {
+        let theme = renderer.theme();
+        let toolbar_bounds = Self::toolbar_bounds(bounds);
+
+        // Draw toolbar background
+        renderer.fill_rect(toolbar_bounds, theme.item_background.darken(0.02))?;
+
+        // Draw bottom border
+        renderer.line(
+            toolbar_bounds.x as f64,
+            (toolbar_bounds.y + toolbar_bounds.height as i32) as f64,
+            (toolbar_bounds.x + toolbar_bounds.width as i32) as f64,
+            (toolbar_bounds.y + toolbar_bounds.height as i32) as f64,
+            theme.border.with_alpha(0.3),
+            1.0,
+        )?;
+
+        // Get current view mode
+        let current_mode = active_tab.map(|t| t.view_mode()).unwrap_or(ViewMode::List);
+
+        // Draw view mode buttons
+        let buttons = [
+            (ViewMode::List, "≡"),    // List icon
+            (ViewMode::Grid, "⊞"),    // Grid icon
+            (ViewMode::Columns, "⫼"), // Columns icon
+        ];
+
+        for (i, (mode, icon)) in buttons.iter().enumerate() {
+            let btn_bounds = Self::view_button_bounds(bounds, i);
+            let is_active = *mode == current_mode;
+            let is_hovered = hovered_button == Some(i);
+
+            // Button background
+            if is_active {
+                renderer.fill_rounded_rect(btn_bounds, 3.0, theme.selection_background.with_alpha(0.4))?;
+            } else if is_hovered {
+                renderer.fill_rounded_rect(btn_bounds, 3.0, theme.item_background)?;
+            }
+
+            // Button icon
+            let color = if is_active {
+                theme.foreground
+            } else if is_hovered {
+                theme.foreground.with_alpha(0.8)
+            } else {
+                theme.foreground.with_alpha(0.5)
+            };
+
+            let text_style = TextStyle::new()
+                .font_family(&theme.font_family)
+                .font_size(theme.font_size)
+                .color(color);
+
+            renderer.text_in_rect(icon, btn_bounds, &text_style)?;
         }
 
         Ok(())
@@ -457,9 +574,99 @@ impl Pane {
     /// Add a new tab to a leaf pane.
     pub fn add_tab(&mut self, path: PathBuf) {
         if let Pane::Leaf { tabs, active_tab, bounds, .. } = self {
-            let tab = Tab::new(path, *bounds);
+            let content_bounds = Self::content_bounds_from_pane_bounds(*bounds);
+            let tab = Tab::new(path, content_bounds);
             tabs.push(tab);
             *active_tab = tabs.len() - 1;
+        }
+    }
+
+    /// Handle mouse move on the pane toolbar. Returns true if hover state changed.
+    pub fn on_toolbar_mouse_move(&mut self, pos: Point) -> bool {
+        match self {
+            Pane::Leaf { bounds, hovered_view_button, .. } => {
+                let old_hovered = *hovered_view_button;
+                *hovered_view_button = None;
+
+                let toolbar_bounds = Self::toolbar_bounds(*bounds);
+                if !toolbar_bounds.contains_point(pos) {
+                    return old_hovered != *hovered_view_button;
+                }
+
+                // Check which button is hovered
+                for i in 0..3 {
+                    let btn_bounds = Self::view_button_bounds(*bounds, i);
+                    if btn_bounds.contains_point(pos) {
+                        *hovered_view_button = Some(i);
+                        break;
+                    }
+                }
+
+                old_hovered != *hovered_view_button
+            }
+            Pane::Split { first, second, .. } => {
+                first.on_toolbar_mouse_move(pos) || second.on_toolbar_mouse_move(pos)
+            }
+        }
+    }
+
+    /// Clear toolbar hover state.
+    pub fn clear_toolbar_hover(&mut self) {
+        match self {
+            Pane::Leaf { hovered_view_button, .. } => {
+                *hovered_view_button = None;
+            }
+            Pane::Split { first, second, .. } => {
+                first.clear_toolbar_hover();
+                second.clear_toolbar_hover();
+            }
+        }
+    }
+
+    /// Handle click on the pane toolbar. Returns the action if any.
+    pub fn on_toolbar_click(&mut self, pos: Point) -> PaneToolbarClick {
+        match self {
+            Pane::Leaf { bounds, tabs, active_tab, .. } => {
+                let toolbar_bounds = Self::toolbar_bounds(*bounds);
+                if !toolbar_bounds.contains_point(pos) {
+                    return PaneToolbarClick::None;
+                }
+
+                // Check which button was clicked
+                let modes = [ViewMode::List, ViewMode::Grid, ViewMode::Columns];
+                for (i, mode) in modes.iter().enumerate() {
+                    let btn_bounds = Self::view_button_bounds(*bounds, i);
+                    if btn_bounds.contains_point(pos) {
+                        // Set the view mode on the active tab
+                        if let Some(tab) = tabs.get_mut(*active_tab) {
+                            tab.set_view_mode(*mode);
+                        }
+                        return PaneToolbarClick::ViewMode(*mode);
+                    }
+                }
+
+                PaneToolbarClick::None
+            }
+            Pane::Split { first, second, .. } => {
+                let result = first.on_toolbar_click(pos);
+                if result != PaneToolbarClick::None {
+                    return result;
+                }
+                second.on_toolbar_click(pos)
+            }
+        }
+    }
+
+    /// Check if a point is within the toolbar area.
+    pub fn is_in_toolbar(&self, pos: Point) -> bool {
+        match self {
+            Pane::Leaf { bounds, .. } => {
+                let toolbar_bounds = Self::toolbar_bounds(*bounds);
+                toolbar_bounds.contains_point(pos)
+            }
+            Pane::Split { first, second, .. } => {
+                first.is_in_toolbar(pos) || second.is_in_toolbar(pos)
+            }
         }
     }
 

@@ -4,6 +4,7 @@ members = [
     "garfield",
     "garfieldctl",
     "garfield-ipc",
+    "garfield-portal",
 ]
 
 [workspace.package]
@@ -57,6 +58,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # PDF rendering
 poppler-rs = "0.25"
 cairo-rs = { version = "0.21", features = ["png"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+
+# D-Bus
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # IPC types (shared between crates)
 garfield-ipc = { path = "garfield-ipc" }

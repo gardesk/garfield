@@ -206,6 +206,71 @@ pub fn sort_entries(entries: &mut [FileEntry], order: SortOrder, direction: Sort
     });
 }
 
+/// Check if a filename matches a glob pattern.
+///
+/// Supports simple patterns:
+/// - `*.ext` - matches any file ending with `.ext`
+/// - `name.*` - matches any file starting with `name.`
+/// - `exact` - matches exact filename
+pub fn matches_filter(filename: &str, pattern: &str) -> bool {
+    let filename_lower = filename.to_lowercase();
+    let pattern_lower = pattern.to_lowercase();
+
+    if pattern_lower == "*" {
+        return true;
+    }
+
+    if let Some(suffix) = pattern_lower.strip_prefix("*.") {
+        // *.ext pattern
+        filename_lower.ends_with(&format!(".{}", suffix))
+    } else if let Some(prefix) = pattern_lower.strip_suffix(".*") {
+        // name.* pattern
+        filename_lower.starts_with(&format!("{}.", prefix))
+    } else if pattern_lower.contains('*') {
+        // More complex patterns - split by * and check if parts exist in order
+        let parts: Vec<&str> = pattern_lower.split('*').collect();
+        let mut pos = 0;
+        for (i, part) in parts.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            if i == 0 && !filename_lower.starts_with(part) {
+                return false;
+            }
+            if i == parts.len() - 1 && !filename_lower.ends_with(part) {
+                return false;
+            }
+            if let Some(found_pos) = filename_lower[pos..].find(part) {
+                pos += found_pos + part.len();
+            } else {
+                return false;
+            }
+        }
+        true
+    } else {
+        // Exact match
+        filename_lower == pattern_lower
+    }
+}
+
+/// Check if a file entry matches any of the given filter patterns.
+/// Directories always match (for navigation).
+/// Empty filters match everything.
+pub fn matches_any_filter(entry: &FileEntry, filters: &[String]) -> bool {
+    // Directories always visible for navigation
+    if entry.is_dir() {
+        return true;
+    }
+
+    // No filters means show everything
+    if filters.is_empty() {
+        return true;
+    }
+
+    // Check each filter
+    filters.iter().any(|pattern| matches_filter(&entry.name, pattern))
+}
+
 /// Format bytes as human-readable string.
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;

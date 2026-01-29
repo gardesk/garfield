@@ -1,0 +1,12 @@
+[Unit]
+Description=Garfield Portal Backend
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.garfield
+ExecStart=/usr/local/bin/garfield-portal
+
+[Install]
+WantedBy=xdg-desktop-portal.service
