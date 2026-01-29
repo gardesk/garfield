@@ -105,6 +105,9 @@ impl FileChooser {
         }
 
         tracing::info!("garfield stdout closed, got {} paths", paths.len());
+        for (i, path) in paths.iter().enumerate() {
+            tracing::info!("  path[{}]: {:?}", i, path);
+        }
 
         // Now remove from manager and check status
         let request = self.request_manager.remove(&handle.as_ref()).await;
@@ -123,7 +126,9 @@ impl FileChooser {
             (ResponseCode::Cancelled as u32, HashMap::new())
         } else {
             tracing::info!("Returning {} selected paths", paths.len());
-            (ResponseCode::Success as u32, build_file_chooser_response(paths))
+            let response = build_file_chooser_response(paths);
+            tracing::info!("Response: {:?}", response);
+            (ResponseCode::Success as u32, response)
         }
     }
 

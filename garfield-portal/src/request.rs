@@ -104,14 +104,18 @@ pub enum ResponseCode {
 pub fn build_file_chooser_response(
     paths: Vec<String>,
 ) -> HashMap<String, Value<'static>> {
+    use zbus::zvariant::Array;
+
     let mut results = HashMap::new();
 
-    // Convert paths to file:// URIs
-    let uris: Vec<Value> = paths
+    // Convert paths to file:// URIs as a proper string array (as)
+    let uris: Vec<String> = paths
         .into_iter()
-        .map(|p| Value::from(format!("file://{}", p)))
+        .map(|p| format!("file://{}", p))
         .collect();
 
-    results.insert("uris".to_string(), Value::Array(uris.into()));
+    // Create array with proper 's' (string) signature
+    let uri_array = Array::from(uris);
+    results.insert("uris".to_string(), Value::Array(uri_array));
     results
 }
