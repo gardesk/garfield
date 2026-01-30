@@ -1,6 +1,6 @@
 //! Tab state for a single directory view.
 
-use crate::core::{read_directory, rename_path, sort_entries, FileEntry, History, SortDirection, SortOrder};
+use crate::core::{read_directory, rename_path, sort_entries, EntryType, FileEntry, History, recents::RecentEntry, SortDirection, SortOrder};
 use crate::ui::{ColumnClickResult, ColumnView, GridView, IconSize, ListView};
 use gartk_core::{Key, Modifiers, Point, Rect};
 use gartk_render::Renderer;
@@ -63,6 +63,10 @@ pub struct Tab {
     bounds: Rect,
     /// Active rename operation (if any).
     renaming: Option<RenameState>,
+    /// Whether currently showing the recents view.
+    showing_recents: bool,
+    /// Cached entries for the recents view.
+    recents_entries: Vec<FileEntry>,
 }
 
 impl Tab {
@@ -94,16 +98,22 @@ impl Tab {
             entries,
             bounds,
             renaming: None,
+            showing_recents: false,
+            recents_entries: Vec::new(),
         }
     }
 
-    /// Get the tab title (directory name).
+    /// Get the tab title (directory name or "Recents").
     pub fn title(&self) -> String {
-        self.history
-            .current()
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string())
+        if self.showing_recents {
+            "Recents".to_string()
+        } else {
+            self.history
+                .current()
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "/".to_string())
+        }
     }
 
     /// Get the current directory path.
@@ -169,10 +179,69 @@ impl Tab {
 
     /// Navigate to a new directory.
     pub fn navigate_to(&mut self, path: PathBuf) {
+        // Exit recents view when navigating to a directory
+        self.showing_recents = false;
+        self.recents_entries.clear();
+
         if path.is_dir() && path != *self.history.current() {
             self.history.navigate(path.clone());
             self.load_directory(&path);
         }
+    }
+
+    /// Check if currently showing the recents view.
+    pub fn is_showing_recents(&self) -> bool {
+        self.showing_recents
+    }
+
+    /// Show the recents view with entries from the RecentsManager.
+    pub fn show_recents_entries(&mut self, recents: &[RecentEntry]) {
+        use std::time::SystemTime;
+
+        self.showing_recents = true;
+        self.recents_entries.clear();
+
+        // Convert RecentEntry items to FileEntry for display
+        for recent in recents {
+            // Get file metadata for size and modified time
+            let (size, modified) = if let Ok(meta) = std::fs::metadata(&recent.path) {
+                (meta.len(), meta.modified().unwrap_or(SystemTime::UNIX_EPOCH))
+            } else {
+                (0, recent.modified)
+            };
+
+            let entry_type = if recent.is_directory() {
+                EntryType::Directory
+            } else {
+                EntryType::File
+            };
+
+            let name = recent.file_name().unwrap_or("").to_string();
+
+            self.recents_entries.push(FileEntry {
+                name,
+                path: recent.path.clone(),
+                entry_type,
+                size,
+                modified: Some(modified),
+                hidden: false,
+                is_symlink: false,
+                symlink_target: None,
+            });
+        }
+
+        // Update the list view to show recents
+        self.list_view.set_entries(self.recents_entries.clone());
+        self.grid_view.set_entries(self.recents_entries.clone());
+    }
+
+    /// Exit the recents view and return to showing the current directory.
+    pub fn exit_recents(&mut self) {
+        self.showing_recents = false;
+        self.recents_entries.clear();
+        // Reload the current directory
+        let path = self.history.current().clone();
+        self.load_directory(&path);
     }
 
     /// Go back in history.
