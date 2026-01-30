@@ -6,6 +6,15 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// Result of clicking on a sidebar item.
+#[derive(Debug, Clone)]
+pub enum SidebarClick {
+    /// Navigate to a path (place or bookmark).
+    Path(PathBuf),
+    /// Open the Recents view.
+    Recents,
+}
+
 /// A place or bookmark in the sidebar.
 #[derive(Debug, Clone)]
 pub struct Place {
@@ -29,7 +38,7 @@ pub struct Sidebar {
     bookmarks: Vec<Place>,
     /// Component bounds.
     bounds: Rect,
-    /// Hovered item index (in combined list).
+    /// Hovered item index (in combined list, 0 = Recents).
     hovered: Option<usize>,
     /// Whether sidebar is visible.
     visible: bool,
@@ -51,6 +60,8 @@ pub struct Sidebar {
     bookmark_drag_start: Option<Point>,
     /// Whether bookmark drag is active (past threshold).
     bookmark_drag_active: bool,
+    /// Bounds of the Recents entry for hit testing.
+    recents_bounds: Rect,
 }
 
 impl Sidebar {
@@ -76,6 +87,7 @@ impl Sidebar {
             bookmark_drop_index: None,
             bookmark_drag_start: None,
             bookmark_drag_active: false,
+            recents_bounds: Rect::new(0, 0, 0, 0),
         };
         sidebar.populate_default_places();
         sidebar.load_bookmarks();
@@ -524,27 +536,32 @@ impl Sidebar {
         self.visible
     }
 
-    /// Total number of items (places + bookmarks + separator if bookmarks exist).
+    /// Total number of items (Recents + places + bookmarks).
+    /// Index 0 is Recents, 1..=places.len() are places, rest are bookmarks.
     fn total_items(&self) -> usize {
-        self.places.len() + self.bookmarks.len()
+        1 + self.places.len() + self.bookmarks.len()
     }
 
-    /// Get item by combined index.
+    /// Get item by combined index (0 = Recents which returns None).
     fn get_item(&self, index: usize) -> Option<&Place> {
-        if index < self.places.len() {
-            self.places.get(index)
+        if index == 0 {
+            // Recents is special, not a Place
+            None
+        } else if index <= self.places.len() {
+            self.places.get(index - 1)
         } else {
-            self.bookmarks.get(index - self.places.len())
+            self.bookmarks.get(index - 1 - self.places.len())
         }
     }
 
     /// Get mutable item by combined index.
     fn get_item_mut(&mut self, index: usize) -> Option<&mut Place> {
-        let places_len = self.places.len();
-        if index < places_len {
-            self.places.get_mut(index)
+        if index == 0 {
+            None
+        } else if index <= self.places.len() {
+            self.places.get_mut(index - 1)
         } else {
-            self.bookmarks.get_mut(index - places_len)
+            self.bookmarks.get_mut(index - 1 - self.places.len())
         }
     }
 
@@ -558,7 +575,15 @@ impl Sidebar {
         }
 
         self.hovered = None;
-        for i in 0..self.total_items() {
+
+        // Check Recents entry first (index 0)
+        if self.recents_bounds.contains_point(pos) {
+            self.hovered = Some(0);
+            return self.hovered != old_hovered;
+        }
+
+        // Check places and bookmarks
+        for i in 1..self.total_items() {
             if let Some(place) = self.get_item(i) {
                 if place.bounds.contains_point(pos) {
                     self.hovered = Some(i);
@@ -576,16 +601,22 @@ impl Sidebar {
         false // Sidebar doesn't scroll currently
     }
 
-    /// Handle mouse click. Returns the path to navigate to, if any.
-    pub fn on_click(&self, pos: Point) -> Option<PathBuf> {
+    /// Handle mouse click. Returns the clicked item.
+    pub fn on_click(&self, pos: Point) -> Option<SidebarClick> {
         if !self.visible || !self.bounds.contains_point(pos) {
             return None;
         }
 
-        for i in 0..self.total_items() {
+        // Check Recents entry first
+        if self.recents_bounds.contains_point(pos) {
+            return Some(SidebarClick::Recents);
+        }
+
+        // Check places and bookmarks
+        for i in 1..self.total_items() {
             if let Some(place) = self.get_item(i) {
                 if place.bounds.contains_point(pos) {
-                    return Some(place.path.clone());
+                    return Some(SidebarClick::Path(place.path.clone()));
                 }
             }
         }
@@ -662,10 +693,27 @@ impl Sidebar {
 
         let mut y = self.bounds.y + self.padding as i32;
 
-        // Render places
+        // Render Recents entry (always at top)
+        let is_recents_hovered = self.hovered == Some(0);
+        y = self.render_recents(renderer, y, is_recents_hovered, &icon_style, &name_style, &hover_style)?;
+
+        // Separator after Recents
+        y += 4;
+        renderer.line(
+            (self.bounds.x + self.padding as i32) as f64,
+            y as f64,
+            (self.bounds.x + self.bounds.width as i32 - self.padding as i32) as f64,
+            y as f64,
+            theme.border,
+            1.0,
+        )?;
+        y += 8;
+
+        // Render places (indices 1..=places.len())
         for i in 0..self.places.len() {
-            let is_hovered = self.hovered == Some(i);
-            y = self.render_item(renderer, i, y, is_hovered, &icon_style, &name_style, &hover_style)?;
+            let combined_index = i + 1; // Offset by 1 for Recents
+            let is_hovered = self.hovered == Some(combined_index);
+            y = self.render_item(renderer, combined_index, y, is_hovered, &icon_style, &name_style, &hover_style)?;
         }
 
         // Always show separator and bookmarks section
@@ -718,7 +766,8 @@ impl Sidebar {
                     self.render_drop_indicator(renderer, y)?;
                 }
 
-                let combined_index = self.places.len() + i;
+                // Offset by 1 (Recents) + places.len()
+                let combined_index = 1 + self.places.len() + i;
                 let is_hovered = self.hovered == Some(combined_index);
                 let is_dragging = self.bookmark_drag_index == Some(i);
                 y = self.render_bookmark_item(renderer, combined_index, y, is_hovered, is_dragging, &icon_style, &name_style, &hover_style)?;
@@ -858,5 +907,44 @@ impl Sidebar {
             2.0,
         )?;
         Ok(())
+    }
+
+    /// Render the Recents entry at the top of the sidebar.
+    fn render_recents(
+        &mut self,
+        renderer: &Renderer,
+        y: i32,
+        is_hovered: bool,
+        icon_style: &TextStyle,
+        name_style: &TextStyle,
+        hover_style: &TextStyle,
+    ) -> anyhow::Result<i32> {
+        let theme = renderer.theme();
+
+        // Update bounds for hit testing
+        self.recents_bounds = Rect::new(
+            self.bounds.x,
+            y,
+            self.bounds.width,
+            self.item_height,
+        );
+
+        // Draw hover background
+        if is_hovered {
+            renderer.fill_rect(self.recents_bounds, theme.item_background)?;
+        }
+
+        let text_style = if is_hovered { hover_style } else { name_style };
+
+        // Draw icon (clock symbol)
+        let icon_x = self.bounds.x + self.padding as i32;
+        let text_y = y + (self.item_height as i32 - theme.font_size as i32) / 2;
+        renderer.text("R", icon_x as f64, text_y as f64, icon_style)?;
+
+        // Draw name
+        let name_x = icon_x + 20;
+        renderer.text("Recents", name_x as f64, text_y as f64, text_style)?;
+
+        Ok(y + self.item_height as i32)
     }
 }
