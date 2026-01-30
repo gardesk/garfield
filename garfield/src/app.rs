@@ -152,10 +152,16 @@ impl App {
             "garfield".to_string()
         };
 
-        // Create window - use Dialog type for picker mode
+        // Create window - use Dialog type and different class for picker mode
+        let window_class = if picker_config.is_picker() {
+            "garfield-picker"
+        } else {
+            "garfield"
+        };
+
         let mut window_config = WindowConfig::default()
             .title(&title)
-            .class("garfield")
+            .class(window_class)
             .position(x, y)
             .size(width, height)
             .transparent(false);
