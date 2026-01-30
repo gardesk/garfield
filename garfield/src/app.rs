@@ -2603,7 +2603,14 @@ impl App {
         };
 
         match std::process::Command::new(&app_cmd).arg(&path).spawn() {
-            Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_cmd)),
+            Ok(_) => {
+                self.status_bar.set_status_message(format!("Opened with {}", app_cmd));
+                // Add to recently used files
+                let mime_type = guess_mime_type(&path);
+                if let Err(e) = self.recents.add_entry(&path, &mime_type) {
+                    tracing::warn!("Failed to add to recents: {}", e);
+                }
+            }
             Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_cmd, e)),
         }
     }
@@ -2611,7 +2618,14 @@ impl App {
     /// Open file with the system's default application (xdg-open).
     fn open_file_with_default(&mut self, path: &PathBuf) {
         match std::process::Command::new("xdg-open").arg(path).spawn() {
-            Ok(_) => self.status_bar.set_status_message(format!("Opened {}", path.file_name().unwrap_or_default().to_string_lossy())),
+            Ok(_) => {
+                self.status_bar.set_status_message(format!("Opened {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                // Add to recently used files
+                let mime_type = guess_mime_type(path);
+                if let Err(e) = self.recents.add_entry(path, &mime_type) {
+                    tracing::warn!("Failed to add to recents: {}", e);
+                }
+            }
             Err(e) => self.status_bar.set_status_message(format!("Failed to open: {}", e)),
         }
     }
@@ -2628,7 +2642,14 @@ impl App {
         }
 
         match std::process::Command::new(app_name).arg(&path).spawn() {
-            Ok(_) => self.status_bar.set_status_message(format!("Opened with {}", app_name)),
+            Ok(_) => {
+                self.status_bar.set_status_message(format!("Opened with {}", app_name));
+                // Add to recently used files
+                let mime_type = guess_mime_type(&path);
+                if let Err(e) = self.recents.add_entry(&path, &mime_type) {
+                    tracing::warn!("Failed to add to recents: {}", e);
+                }
+            }
             Err(e) => self.status_bar.set_status_message(format!("Failed to open with {}: {}", app_name, e)),
         }
     }
@@ -3578,4 +3599,64 @@ impl Drop for App {
     fn drop(&mut self) {
         let _ = self.window.connection().inner().free_gc(self.gc);
     }
+}
+
+/// Guess MIME type from file extension.
+fn guess_mime_type(path: &std::path::Path) -> String {
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    match ext.as_str() {
+        // Images
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        // Documents
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        // Code
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        "c" | "h" => "text/x-c",
+        "cpp" | "hpp" | "cc" => "text/x-c++",
+        "java" => "text/x-java",
+        "go" => "text/x-go",
+        "lua" => "text/x-lua",
+        "sh" | "bash" => "application/x-shellscript",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "application/x-yaml",
+        // Archives
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" | "gzip" => "application/gzip",
+        "xz" => "application/x-xz",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        // Audio
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        // Video
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        // Fallback
+        _ => "application/octet-stream",
+    }.to_string()
 }
