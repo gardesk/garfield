@@ -38,6 +38,19 @@ impl Breadcrumb {
         }
     }
 
+    /// Set the breadcrumb to show "Recents" as a non-navigable label.
+    pub fn set_recents(&mut self) {
+        self.segments.clear();
+        self.hovered = None;
+        // Add a single non-navigable "Recents" segment
+        // Using an empty path so clicking does nothing
+        self.segments.push(Segment {
+            text: "Recents".to_string(),
+            path: PathBuf::new(),
+            bounds: Rect::new(0, 0, 0, 0),
+        });
+    }
+
     /// Update the path displayed.
     pub fn set_path(&mut self, path: &Path) {
         self.segments.clear();
