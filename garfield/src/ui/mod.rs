@@ -28,7 +28,7 @@ pub use help_modal::HelpModal;
 pub use list_view::ListView;
 pub use pane::{Pane, PaneToolbarClick};
 pub use picker_toolbar::{PickerToolbar, PickerToolbarClick, PICKER_TOOLBAR_HEIGHT};
-pub use sidebar::Sidebar;
+pub use sidebar::{Sidebar, SidebarClick};
 pub use status_bar::StatusBar;
 pub use tab::{RenameState, Tab, ViewMode};
 pub use tab_bar::{TabBar, TabBarClickResult, TabInfo, TAB_BAR_HEIGHT};
