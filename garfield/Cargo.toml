@@ -54,3 +54,6 @@ image.workspace = true
 # PDF rendering
 poppler-rs.workspace = true
 cairo-rs.workspace = true
+
+# XML parsing
+quick-xml.workspace = true
