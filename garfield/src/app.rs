@@ -2,12 +2,12 @@
 
 use crate::PickerConfig;
 use garfield::core::{
-    Clipboard, ClipboardOperation, DragTarget, FileOperation, FileDragController, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, UndoStack,
+    Clipboard, ClipboardOperation, DragTarget, FileOperation, FileDragController, ImagePreviewLoader, PdfPreviewLoader, PreviewLoader, RecentsManager, UndoStack,
     copy_files, move_files, delete_files, create_directory,
     trash_files, restore_from_trash, matches_any_filter,
 };
 use garfield::ui::pane::SplitDirection;
-use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, IconSize, InputDialog, InputResult, Pane, PaneToolbarClick, PickerToolbar, PickerToolbarClick, ProgressDialog, Sidebar, StatusBar, TabBar, TabBarClickResult, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT, PICKER_TOOLBAR_HEIGHT};
+use garfield::ui::{AddressBar, AppPickerDialog, AppPickerResult, Breadcrumb, ConfirmDialog, ConflictAction, ConflictDialog, ContextMenu, ContextMenuAction, ContextType, DialogResult, HelpModal, IconSize, InputDialog, InputResult, Pane, PaneToolbarClick, PickerToolbar, PickerToolbarClick, ProgressDialog, Sidebar, SidebarClick, StatusBar, TabBar, TabBarClickResult, TabInfo, Toolbar, ToolbarAction, ViewMode, TAB_BAR_HEIGHT, TOOLBAR_HEIGHT, PICKER_TOOLBAR_HEIGHT};
 use anyhow::Result;
 use gartk_core::{InputEvent, Key, MouseButton, Point, Rect, Theme};
 use gartk_render::{Renderer, TextStyle};
@@ -109,6 +109,8 @@ pub struct App {
     picker_config: PickerConfig,
     /// Picker toolbar (only used in picker mode).
     picker_toolbar: Option<PickerToolbar>,
+    /// Recently used files manager.
+    recents: RecentsManager,
 }
 
 /// State for a paste operation with conflicts.
@@ -342,6 +344,13 @@ impl App {
             x11_clipboard,
             picker_config,
             picker_toolbar,
+            recents: {
+                let mut recents = RecentsManager::new();
+                if let Err(e) = recents.load() {
+                    tracing::warn!("Failed to load recents: {}", e);
+                }
+                recents
+            },
         };
 
         app.update_status_bar();
@@ -725,8 +734,11 @@ impl App {
         }
 
         // Check sidebar clicks (for non-bookmark items)
-        if let Some(path) = self.sidebar.on_click(pos) {
-            self.navigate_to(path);
+        if let Some(click) = self.sidebar.on_click(pos) {
+            match click {
+                SidebarClick::Path(path) => self.navigate_to(path),
+                SidebarClick::Recents => self.show_recents(),
+            }
             return;
         }
 
@@ -1764,6 +1776,30 @@ impl App {
             }
         }
 
+        // In recents mode, open files with default app and navigate into directories
+        let showing_recents = self.focused_pane()
+            .and_then(|pane| pane.active_tab())
+            .is_some_and(|tab| tab.is_showing_recents());
+
+        if showing_recents {
+            if let Some(entry) = self.focused_pane()
+                .and_then(|pane| pane.active_tab())
+                .and_then(|tab| tab.selected_entry())
+                .cloned()
+            {
+                if entry.is_dir() {
+                    // Navigate to directory (this exits recents mode)
+                    self.navigate_to(entry.path);
+                } else {
+                    // Open file with default application
+                    self.open_file_with_default(&entry.path);
+                }
+            }
+            self.sync_breadcrumb();
+            self.update_status_bar();
+            return;
+        }
+
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.enter_selected();
@@ -1779,6 +1815,21 @@ impl App {
         if let Some(pane) = self.focused_pane_mut() {
             if let Some(tab) = pane.active_tab_mut() {
                 tab.navigate_to(path);
+            }
+        }
+        self.sync_tab_bar();
+        self.sync_breadcrumb();
+        self.update_status_bar();
+    }
+
+    /// Show the recents view.
+    fn show_recents(&mut self) {
+        self.status_bar.clear_status_message();
+        // Clone recents entries to avoid borrow conflict
+        let recents_entries: Vec<_> = self.recents.entries().to_vec();
+        if let Some(pane) = self.focused_pane_mut() {
+            if let Some(tab) = pane.active_tab_mut() {
+                tab.show_recents_entries(&recents_entries);
             }
         }
         self.sync_tab_bar();
@@ -2557,6 +2608,14 @@ impl App {
         }
     }
 
+    /// Open file with the system's default application (xdg-open).
+    fn open_file_with_default(&mut self, path: &PathBuf) {
+        match std::process::Command::new("xdg-open").arg(path).spawn() {
+            Ok(_) => self.status_bar.set_status_message(format!("Opened {}", path.file_name().unwrap_or_default().to_string_lossy())),
+            Err(e) => self.status_bar.set_status_message(format!("Failed to open: {}", e)),
+        }
+    }
+
     /// Open file with custom application (from input dialog).
     fn open_with_custom(&mut self, app_name: &str) {
         let Some(path) = self.pending_open_with_path.take() else {
@@ -3092,12 +3151,21 @@ impl App {
 
     /// Sync breadcrumb with active tab's path.
     fn sync_breadcrumb(&mut self) {
-        let path = self.focused_pane()
+        // Check if we're showing recents
+        let showing_recents = self.focused_pane()
             .and_then(|pane| pane.active_tab())
-            .map(|tab| tab.current_path().clone());
+            .is_some_and(|tab| tab.is_showing_recents());
 
-        if let Some(path) = path {
-            self.breadcrumb.set_path(&path);
+        if showing_recents {
+            self.breadcrumb.set_recents();
+        } else {
+            let path = self.focused_pane()
+                .and_then(|pane| pane.active_tab())
+                .map(|tab| tab.current_path().clone());
+
+            if let Some(path) = path {
+                self.breadcrumb.set_path(&path);
+            }
         }
     }
 
