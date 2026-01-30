@@ -3,13 +3,14 @@
 //! Parses and manages `~/.local/share/recently-used.xbel` (XBEL format).
 //! This provides system-wide recently accessed files from any application.
 
-use std::fs;
-use std::io::BufReader;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
+use chrono::{DateTime, Utc};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, Event};
+use quick_xml::{Reader, Writer};
 use thiserror::Error;
 
 /// Maximum number of recent entries to track.
@@ -173,10 +174,182 @@ impl RecentsManager {
     /// Add an entry when garfield opens a file (writes to xbel).
     /// This makes garfield a good citizen of the XDG ecosystem.
     pub fn add_entry(&mut self, path: &Path, mime_type: &str) -> Result<(), RecentsError> {
-        // For now, just reload after external tools write
-        // Full write support can be added later
-        let _ = (path, mime_type);
+        // Read existing bookmarks
+        let mut bookmarks = self.read_all_bookmarks()?;
+
+        // Create file URI
+        let uri = format!("file://{}", percent_encode(&path.to_string_lossy()));
+        let now = Utc::now();
+        let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+
+        // Check if entry already exists
+        if let Some(existing) = bookmarks.iter_mut().find(|b| b.href == uri) {
+            // Update existing entry
+            existing.visited = now_str.clone();
+            existing.modified = now_str;
+            existing.app_count += 1;
+        } else {
+            // Add new entry
+            bookmarks.push(StoredBookmark {
+                href: uri,
+                added: now_str.clone(),
+                modified: now_str.clone(),
+                visited: now_str,
+                mime_type: mime_type.to_string(),
+                app_count: 1,
+            });
+        }
+
+        // Write back to file
+        self.write_bookmarks(&bookmarks)?;
+
+        // Reload cache
         self.load()
+    }
+
+    /// Read all bookmarks from the xbel file (for rewriting).
+    fn read_all_bookmarks(&self) -> Result<Vec<StoredBookmark>, RecentsError> {
+        let mut bookmarks = Vec::new();
+
+        if !self.xbel_path.exists() {
+            return Ok(bookmarks);
+        }
+
+        let file = fs::File::open(&self.xbel_path)?;
+        let reader = BufReader::new(file);
+        let mut xml = Reader::from_reader(reader);
+        xml.config_mut().trim_text(true);
+
+        let mut buf = Vec::new();
+        let mut current: Option<StoredBookmark> = None;
+        let mut in_metadata = false;
+
+        loop {
+            match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                    match e.name().as_ref() {
+                        b"bookmark" => {
+                            let href = get_attr(e, b"href").unwrap_or_default();
+                            let added = get_attr(e, b"added").unwrap_or_default();
+                            let modified = get_attr(e, b"modified").unwrap_or_default();
+                            let visited = get_attr(e, b"visited").unwrap_or_default();
+                            current = Some(StoredBookmark {
+                                href,
+                                added,
+                                modified,
+                                visited,
+                                mime_type: String::new(),
+                                app_count: 1,
+                            });
+                        }
+                        b"mime:mime-type" if current.is_some() && in_metadata => {
+                            if let Some(ref mut bm) = current {
+                                bm.mime_type = get_attr(e, b"type").unwrap_or_default();
+                            }
+                        }
+                        b"bookmark:application" if current.is_some() => {
+                            if let Some(ref mut bm) = current {
+                                if let Some(count_str) = get_attr(e, b"count") {
+                                    bm.app_count = count_str.parse().unwrap_or(1);
+                                }
+                            }
+                        }
+                        b"metadata" => {
+                            in_metadata = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::End(ref e)) => match e.name().as_ref() {
+                    b"bookmark" => {
+                        if let Some(bm) = current.take() {
+                            // Keep all bookmarks, not just file:// ones
+                            bookmarks.push(bm);
+                        }
+                    }
+                    b"metadata" => {
+                        in_metadata = false;
+                    }
+                    _ => {}
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(RecentsError::Xml(e)),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(bookmarks)
+    }
+
+    /// Write bookmarks back to the xbel file.
+    fn write_bookmarks(&self, bookmarks: &[StoredBookmark]) -> Result<(), RecentsError> {
+        let file = File::create(&self.xbel_path)?;
+        let mut writer = Writer::new_with_indent(BufWriter::new(file), b' ', 2);
+
+        // XML declaration
+        writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+
+        // Root element with namespaces
+        let mut xbel = BytesStart::new("xbel");
+        xbel.push_attribute(("version", "1.0"));
+        xbel.push_attribute(("xmlns:bookmark", "http://www.freedesktop.org/standards/desktop-bookmarks"));
+        xbel.push_attribute(("xmlns:mime", "http://www.freedesktop.org/standards/shared-mime-info"));
+        writer.write_event(Event::Start(xbel))?;
+
+        // Write each bookmark
+        for bookmark in bookmarks {
+            self.write_bookmark(&mut writer, bookmark)?;
+        }
+
+        // Close root
+        writer.write_event(Event::End(BytesEnd::new("xbel")))?;
+
+        writer.into_inner().flush()?;
+        Ok(())
+    }
+
+    /// Write a single bookmark element.
+    fn write_bookmark<W: Write>(&self, writer: &mut Writer<W>, bookmark: &StoredBookmark) -> Result<(), RecentsError> {
+        let mut elem = BytesStart::new("bookmark");
+        elem.push_attribute(("href", bookmark.href.as_str()));
+        elem.push_attribute(("added", bookmark.added.as_str()));
+        elem.push_attribute(("modified", bookmark.modified.as_str()));
+        elem.push_attribute(("visited", bookmark.visited.as_str()));
+        writer.write_event(Event::Start(elem))?;
+
+        // <info>
+        writer.write_event(Event::Start(BytesStart::new("info")))?;
+
+        // <metadata>
+        let mut metadata = BytesStart::new("metadata");
+        metadata.push_attribute(("owner", "http://freedesktop.org"));
+        writer.write_event(Event::Start(metadata))?;
+
+        // <mime:mime-type>
+        if !bookmark.mime_type.is_empty() {
+            let mut mime = BytesStart::new("mime:mime-type");
+            mime.push_attribute(("type", bookmark.mime_type.as_str()));
+            writer.write_event(Event::Empty(mime))?;
+        }
+
+        // <bookmark:applications>
+        writer.write_event(Event::Start(BytesStart::new("bookmark:applications")))?;
+
+        // <bookmark:application>
+        let mut app = BytesStart::new("bookmark:application");
+        app.push_attribute(("name", "garfield"));
+        app.push_attribute(("exec", "garfield %u"));
+        app.push_attribute(("modified", bookmark.modified.as_str()));
+        app.push_attribute(("count", bookmark.app_count.to_string().as_str()));
+        writer.write_event(Event::Empty(app))?;
+
+        writer.write_event(Event::End(BytesEnd::new("bookmark:applications")))?;
+        writer.write_event(Event::End(BytesEnd::new("metadata")))?;
+        writer.write_event(Event::End(BytesEnd::new("info")))?;
+        writer.write_event(Event::End(BytesEnd::new("bookmark")))?;
+
+        Ok(())
     }
 
     /// Clear all cached entries (does not modify the file).
@@ -189,6 +362,16 @@ impl Default for RecentsManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A bookmark as stored in the xbel file (for rewriting).
+struct StoredBookmark {
+    href: String,
+    added: String,
+    modified: String,
+    visited: String,
+    mime_type: String,
+    app_count: u32,
 }
 
 /// Partial bookmark being parsed.
@@ -245,6 +428,26 @@ fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
         .and_then(|a| String::from_utf8(a.value.to_vec()).ok())
 }
 
+/// Percent-encode a path for use in file:// URIs.
+fn percent_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for c in s.chars() {
+        match c {
+            // Safe characters (unreserved in RFC 3986 + / for paths)
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => {
+                result.push(c);
+            }
+            // Everything else gets percent-encoded
+            _ => {
+                for byte in c.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Percent-decode a URL path component.
 fn percent_decode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -274,9 +477,6 @@ fn percent_decode(s: &str) -> String {
 /// Parse ISO 8601 timestamp to SystemTime.
 fn parse_iso8601(s: &str) -> Option<SystemTime> {
     // Format: 2026-01-12T11:08:52.375556Z
-    // We'll use chrono for parsing
-    use chrono::{DateTime, Utc};
-
     let dt: DateTime<Utc> = s.parse().ok()?;
     Some(SystemTime::from(dt))
 }
