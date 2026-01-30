@@ -7,6 +7,7 @@ pub mod history;
 pub mod image_preview;
 pub mod operations;
 pub mod pdf_preview;
+pub mod recents;
 pub mod thumbnail;
 pub mod preview_loader;
 pub mod trash;
@@ -25,6 +26,7 @@ pub use operations::{
 };
 pub use pdf_preview::{is_pdf, PdfPreview, PdfPreviewLoader, PdfPreviewResult};
 pub use preview_loader::{PreviewLoader, PreviewResult};
+pub use recents::{RecentEntry, RecentsManager};
 pub use thumbnail::{Thumbnail, ThumbnailLoader, THUMBNAIL_SIZE};
 pub use trash::{empty_trash, restore_from_trash, trash_file, trash_files, trash_dir};
 pub use undo::{FileOperation, UndoStack};
