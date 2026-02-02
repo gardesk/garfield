@@ -35,9 +35,17 @@ pub struct Args {
     #[arg(long, short = 't', requires = "picker")]
     pub title: Option<String>,
 
-    /// Custom accept button text (default: "Open")
+    /// Custom accept button text (default: "Open" or "Save")
     #[arg(long, requires = "picker")]
     pub accept_label: Option<String>,
+
+    /// Enable save mode (for SaveFile portal requests)
+    #[arg(long, requires = "picker")]
+    pub save: bool,
+
+    /// Suggested filename for save mode
+    #[arg(long, requires = "save")]
+    pub save_filename: Option<String>,
 }
 
 /// Picker mode configuration parsed from CLI args.
@@ -54,6 +62,11 @@ pub enum PickerMode {
     OpenDirectory {
         multiple: bool,
     },
+    /// Save file picker (with filename input).
+    SaveFile {
+        /// Suggested filename from the portal.
+        suggested_filename: String,
+    },
 }
 
 impl PickerMode {
@@ -68,6 +81,7 @@ impl PickerMode {
             PickerMode::None => true,
             PickerMode::OpenFile { multiple, .. } => *multiple,
             PickerMode::OpenDirectory { multiple } => *multiple,
+            PickerMode::SaveFile { .. } => false,
         }
     }
 
@@ -82,6 +96,19 @@ impl PickerMode {
     /// Whether we're picking directories only.
     pub fn is_directory_mode(&self) -> bool {
         matches!(self, PickerMode::OpenDirectory { .. })
+    }
+
+    /// Whether this is save mode.
+    pub fn is_save_mode(&self) -> bool {
+        matches!(self, PickerMode::SaveFile { .. })
+    }
+
+    /// Get suggested filename for save mode.
+    pub fn suggested_filename(&self) -> Option<&str> {
+        match self {
+            PickerMode::SaveFile { suggested_filename } => Some(suggested_filename),
+            _ => None,
+        }
     }
 }
 
@@ -100,7 +127,11 @@ impl PickerConfig {
     /// Create from command line arguments.
     pub fn from_args(args: &Args) -> Self {
         let mode = if args.picker {
-            if args.directory {
+            if args.save {
+                PickerMode::SaveFile {
+                    suggested_filename: args.save_filename.clone().unwrap_or_else(|| "untitled".to_string()),
+                }
+            } else if args.directory {
                 PickerMode::OpenDirectory {
                     multiple: args.multiple,
                 }
@@ -118,10 +149,13 @@ impl PickerConfig {
             PickerMode::None
         };
 
+        // Default button label depends on mode
+        let default_label = if args.save { "Save" } else { "Open" };
+
         Self {
             mode,
             title: args.title.clone(),
-            accept_label: args.accept_label.clone().unwrap_or_else(|| "Open".to_string()),
+            accept_label: args.accept_label.clone().unwrap_or_else(|| default_label.to_string()),
         }
     }
 

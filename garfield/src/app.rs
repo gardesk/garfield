@@ -212,13 +212,23 @@ impl App {
                 width - sidebar_w,
                 PICKER_TOOLBAR_HEIGHT,
             );
-            let mut pt = PickerToolbar::new(picker_toolbar_bounds, picker_config.accept_label.clone());
-            // Set filter description if we have filters
-            let filters = picker_config.mode.filters();
-            if !filters.is_empty() {
-                let desc = format!("Filter: {}", filters.join(", "));
-                pt.set_filter_description(Some(desc));
-            }
+            let pt = if picker_config.mode.is_save_mode() {
+                // Save mode - create with filename textbox
+                let suggested = picker_config.mode.suggested_filename()
+                    .unwrap_or("untitled")
+                    .to_string();
+                PickerToolbar::new_save_mode(picker_toolbar_bounds, picker_config.accept_label.clone(), suggested)
+            } else {
+                // Open mode - create with filters
+                let mut pt = PickerToolbar::new(picker_toolbar_bounds, picker_config.accept_label.clone());
+                // Set filter description if we have filters
+                let filters = picker_config.mode.filters();
+                if !filters.is_empty() {
+                    let desc = format!("Filter: {}", filters.join(", "));
+                    pt.set_filter_description(Some(desc));
+                }
+                pt
+            };
             Some(pt)
         } else {
             None
@@ -442,11 +452,33 @@ impl App {
 
     /// Output picker selection and exit.
     fn accept_picker_selection(&mut self) {
-        let paths = self.get_picker_selection();
+        // Check if we're in save mode
+        if self.picker_config.mode.is_save_mode() {
+            // Get filename from picker toolbar
+            let filename = self.picker_toolbar
+                .as_ref()
+                .map(|pt| pt.filename().to_string())
+                .unwrap_or_else(|| "untitled".to_string());
 
-        // Output paths to stdout (one per line)
-        for path in &paths {
-            println!("{}", path.display());
+            if filename.is_empty() {
+                // Don't accept with empty filename
+                return;
+            }
+
+            // Get current directory from focused pane
+            if let Some(pane) = self.focused_pane() {
+                if let Some(tab) = pane.active_tab() {
+                    let current_dir = tab.current_path();
+                    let full_path = current_dir.join(&filename);
+                    println!("{}", full_path.display());
+                }
+            }
+        } else {
+            // Open mode - output selected paths
+            let paths = self.get_picker_selection();
+            for path in &paths {
+                println!("{}", path.display());
+            }
         }
 
         self.should_quit = true;
@@ -700,7 +732,7 @@ impl App {
         }
 
         // Check picker toolbar clicks (if in picker mode)
-        if let Some(picker_toolbar) = &self.picker_toolbar {
+        if let Some(picker_toolbar) = &mut self.picker_toolbar {
             match picker_toolbar.on_click(pos) {
                 PickerToolbarClick::Accept => {
                     self.accept_picker_selection();
@@ -1217,6 +1249,25 @@ impl App {
             }
             if self.address_bar.handle_key(key) {
                 return;
+            }
+        }
+
+        // Handle picker filename textbox input (save mode)
+        if let Some(picker_toolbar) = &mut self.picker_toolbar {
+            if picker_toolbar.is_editing_filename() {
+                if *key == Key::Return {
+                    // Enter accepts the save
+                    self.accept_picker_selection();
+                    return;
+                }
+                if *key == Key::Tab {
+                    // Tab cycles focus
+                    picker_toolbar.cycle_focus();
+                    return;
+                }
+                if picker_toolbar.handle_key(key) {
+                    return;
+                }
             }
         }
 

@@ -1,9 +1,10 @@
 //! Picker toolbar component with Accept/Cancel buttons.
 //!
 //! This toolbar replaces the normal toolbar when garfield runs in picker mode.
+//! In save mode, also includes a filename textbox.
 
 use anyhow::Result;
-use gartk_core::{Point, Rect};
+use gartk_core::{Key, Point, Rect};
 use gartk_render::{Renderer, TextStyle};
 
 /// Height of the picker toolbar (same as normal toolbar).
@@ -20,6 +21,9 @@ const PADDING: i32 = 8;
 
 /// Gap between buttons.
 const BUTTON_GAP: i32 = 12;
+
+/// Filename textbox minimum width.
+const FILENAME_MIN_WIDTH: u32 = 200;
 
 /// Picker toolbar click result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,16 +50,28 @@ pub struct PickerToolbar {
     cancel_bounds: Rect,
     /// Filter text bounds (for hover detection).
     filter_bounds: Rect,
-    /// Hovered button (0 = accept, 1 = cancel).
+    /// Hovered button (0 = accept, 1 = cancel, 2 = filename).
     hovered: Option<usize>,
     /// Whether filter text is hovered.
     filter_hovered: bool,
-    /// Focused button for keyboard navigation (0 = accept, 1 = cancel).
+    /// Focused button for keyboard navigation (0 = accept, 1 = cancel, 2 = filename).
     focused: usize,
     /// Whether accept button is enabled (has valid selection).
     accept_enabled: bool,
     /// Filter description shown in toolbar (full text).
     filter_description: Option<String>,
+    /// Whether this is save mode (shows filename textbox).
+    save_mode: bool,
+    /// Filename for save mode.
+    filename: String,
+    /// Filename textbox bounds.
+    filename_bounds: Rect,
+    /// Whether filename textbox is being edited.
+    filename_editing: bool,
+    /// Cursor position in filename (character index).
+    filename_cursor: usize,
+    /// Selection start in filename (if different from cursor, text is selected).
+    filename_selection_start: Option<usize>,
 }
 
 impl PickerToolbar {
@@ -73,6 +89,38 @@ impl PickerToolbar {
             focused: 0,
             accept_enabled: false,
             filter_description: None,
+            save_mode: false,
+            filename: String::new(),
+            filename_bounds: Rect::default(),
+            filename_editing: false,
+            filename_cursor: 0,
+            filename_selection_start: None,
+        };
+        toolbar.layout();
+        toolbar
+    }
+
+    /// Create a new picker toolbar for save mode with suggested filename.
+    pub fn new_save_mode(bounds: Rect, accept_label: String, suggested_filename: String) -> Self {
+        let cursor_pos = suggested_filename.len();
+        let mut toolbar = Self {
+            bounds,
+            accept_label,
+            cancel_label: "Cancel".to_string(),
+            accept_bounds: Rect::default(),
+            cancel_bounds: Rect::default(),
+            filter_bounds: Rect::default(),
+            hovered: None,
+            filter_hovered: false,
+            focused: 2, // Start focused on filename
+            accept_enabled: true, // Enable by default in save mode
+            filter_description: None,
+            save_mode: true,
+            filename: suggested_filename,
+            filename_bounds: Rect::default(),
+            filename_editing: true, // Start editing
+            filename_cursor: cursor_pos,
+            filename_selection_start: Some(0), // Select all
         };
         toolbar.layout();
         toolbar
@@ -95,10 +143,20 @@ impl PickerToolbar {
         let accept_x = cancel_x - BUTTON_WIDTH as i32 - BUTTON_GAP;
         self.accept_bounds = Rect::new(accept_x, button_y, BUTTON_WIDTH, BUTTON_HEIGHT);
 
-        // Filter text area (left side, up to accept button)
-        let filter_x = self.bounds.x + PADDING;
-        let filter_width = (accept_x - BUTTON_GAP - filter_x).max(0) as u32;
-        self.filter_bounds = Rect::new(filter_x, self.bounds.y, filter_width, self.bounds.height);
+        if self.save_mode {
+            // Filename textbox (left side, takes available space)
+            let filename_x = self.bounds.x + PADDING;
+            let available_width = (accept_x - BUTTON_GAP - filename_x).max(FILENAME_MIN_WIDTH as i32) as u32;
+            self.filename_bounds = Rect::new(filename_x, button_y, available_width, BUTTON_HEIGHT);
+            // No filter area in save mode
+            self.filter_bounds = Rect::default();
+        } else {
+            // Filter text area (left side, up to accept button)
+            let filter_x = self.bounds.x + PADDING;
+            let filter_width = (accept_x - BUTTON_GAP - filter_x).max(0) as u32;
+            self.filter_bounds = Rect::new(filter_x, self.bounds.y, filter_width, self.bounds.height);
+            self.filename_bounds = Rect::default();
+        }
     }
 
     /// Get max width available for filter text.
@@ -136,6 +194,8 @@ impl PickerToolbar {
             Some(0)
         } else if self.cancel_bounds.contains_point(pos) {
             Some(1)
+        } else if self.save_mode && self.filename_bounds.contains_point(pos) {
+            Some(2)
         } else {
             None
         };
@@ -170,29 +230,151 @@ impl PickerToolbar {
     }
 
     /// Handle click. Returns the action if a button was clicked.
-    pub fn on_click(&self, pos: Point) -> PickerToolbarClick {
+    pub fn on_click(&mut self, pos: Point) -> PickerToolbarClick {
         if self.accept_bounds.contains_point(pos) && self.accept_enabled {
+            self.filename_editing = false;
             PickerToolbarClick::Accept
         } else if self.cancel_bounds.contains_point(pos) {
+            self.filename_editing = false;
             PickerToolbarClick::Cancel
+        } else if self.save_mode && self.filename_bounds.contains_point(pos) {
+            // Click on filename textbox - start editing
+            self.filename_editing = true;
+            self.focused = 2;
+            // Position cursor at click point (simplified: just move to end)
+            self.filename_cursor = self.filename.len();
+            self.filename_selection_start = None;
+            PickerToolbarClick::None
         } else {
+            // Click elsewhere stops editing
+            self.filename_editing = false;
             PickerToolbarClick::None
         }
     }
 
-    /// Cycle focus between buttons.
+    /// Cycle focus between elements.
     pub fn cycle_focus(&mut self) {
-        self.focused = 1 - self.focused;
+        if self.save_mode {
+            // Cycle: filename (2) -> accept (0) -> cancel (1) -> filename
+            self.focused = match self.focused {
+                2 => 0,
+                0 => 1,
+                _ => 2,
+            };
+            self.filename_editing = self.focused == 2;
+        } else {
+            self.focused = 1 - self.focused;
+        }
     }
 
-    /// Activate focused button.
+    /// Activate focused element.
     pub fn activate_focused(&self) -> PickerToolbarClick {
         if self.focused == 0 && self.accept_enabled {
             PickerToolbarClick::Accept
         } else if self.focused == 1 {
             PickerToolbarClick::Cancel
         } else {
-            PickerToolbarClick::None
+            // Focused on filename - Enter should accept if valid
+            if self.save_mode && !self.filename.is_empty() {
+                PickerToolbarClick::Accept
+            } else {
+                PickerToolbarClick::None
+            }
+        }
+    }
+
+    /// Whether filename textbox is being edited.
+    pub fn is_editing_filename(&self) -> bool {
+        self.save_mode && self.filename_editing
+    }
+
+    /// Get the current filename.
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    /// Handle keyboard input for filename editing. Returns true if handled.
+    pub fn handle_key(&mut self, key: &Key) -> bool {
+        if !self.filename_editing {
+            return false;
+        }
+
+        match key {
+            Key::Char(c) => {
+                // Don't allow path separators in filename
+                if *c != '/' && *c != '\\' && *c != '\0' {
+                    // Delete selection first if any
+                    self.delete_selection();
+                    self.filename.insert(self.filename_cursor, *c);
+                    self.filename_cursor += 1;
+                }
+                true
+            }
+            Key::Backspace => {
+                if self.filename_selection_start.is_some() {
+                    self.delete_selection();
+                } else if self.filename_cursor > 0 {
+                    self.filename_cursor -= 1;
+                    self.filename.remove(self.filename_cursor);
+                }
+                true
+            }
+            Key::Delete => {
+                if self.filename_selection_start.is_some() {
+                    self.delete_selection();
+                } else if self.filename_cursor < self.filename.len() {
+                    self.filename.remove(self.filename_cursor);
+                }
+                true
+            }
+            Key::Left => {
+                if self.filename_cursor > 0 {
+                    self.filename_cursor -= 1;
+                }
+                self.filename_selection_start = None;
+                true
+            }
+            Key::Right => {
+                if self.filename_cursor < self.filename.len() {
+                    self.filename_cursor += 1;
+                }
+                self.filename_selection_start = None;
+                true
+            }
+            Key::Home => {
+                self.filename_cursor = 0;
+                self.filename_selection_start = None;
+                true
+            }
+            Key::End => {
+                self.filename_cursor = self.filename.len();
+                self.filename_selection_start = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Delete selected text.
+    fn delete_selection(&mut self) {
+        if let Some(start) = self.filename_selection_start.take() {
+            let (from, to) = if start < self.filename_cursor {
+                (start, self.filename_cursor)
+            } else {
+                (self.filename_cursor, start)
+            };
+            self.filename.drain(from..to);
+            self.filename_cursor = from;
+        }
+    }
+
+    /// Select all text in filename.
+    pub fn select_all(&mut self) {
+        if self.save_mode {
+            self.filename_selection_start = Some(0);
+            self.filename_cursor = self.filename.len();
+            self.filename_editing = true;
+            self.focused = 2;
         }
     }
 
@@ -208,8 +390,11 @@ impl PickerToolbar {
         // Toolbar background
         renderer.fill_rect(self.bounds, theme.item_background)?;
 
-        // Filter description (left side, truncated with ellipsis)
-        if let Some(desc) = &self.filter_description {
+        // Save mode: filename textbox
+        if self.save_mode {
+            self.render_filename_textbox(renderer)?;
+        } else if let Some(desc) = &self.filter_description {
+            // Filter description (left side, truncated with ellipsis)
             let text_style = TextStyle::new()
                 .font_family(&theme.font_family)
                 .font_size(theme.font_size - 1.0)
@@ -288,6 +473,122 @@ impl PickerToolbar {
             Rect::new(self.bounds.x, border_y, self.bounds.width, 1),
             theme.border,
         )?;
+
+        Ok(())
+    }
+
+    /// Render the filename textbox for save mode.
+    fn render_filename_textbox(&self, renderer: &Renderer) -> Result<()> {
+        let theme = renderer.theme();
+        let filename_focused = self.focused == 2;
+        let filename_hovered = self.hovered == Some(2);
+
+        // Textbox background - brighter when editing/focused
+        let bg_color = if self.filename_editing {
+            theme.background
+        } else if filename_focused || filename_hovered {
+            theme.item_hover_background
+        } else {
+            theme.input_background
+        };
+
+        renderer.fill_rounded_rect(self.filename_bounds, 4.0, bg_color)?;
+
+        // Border - thick accent color when editing, thinner when just focused
+        if self.filename_editing {
+            // Editing: prominent accent border
+            renderer.stroke_rounded_rect(self.filename_bounds, 4.0, theme.selection_background, 2.0)?;
+            // Inner glow effect
+            let inner = Rect::new(
+                self.filename_bounds.x + 1,
+                self.filename_bounds.y + 1,
+                self.filename_bounds.width.saturating_sub(2),
+                self.filename_bounds.height.saturating_sub(2),
+            );
+            renderer.stroke_rounded_rect(inner, 3.0, theme.selection_background.with_alpha(0.3), 1.0)?;
+        } else if filename_focused {
+            // Focused but not editing: white/foreground border
+            renderer.stroke_rounded_rect(self.filename_bounds, 4.0, theme.foreground, 2.0)?;
+        } else {
+            // Normal: subtle border
+            renderer.stroke_rounded_rect(self.filename_bounds, 4.0, theme.border, 1.0)?;
+        }
+
+        // "Filename:" label
+        let label = "Filename:";
+        let label_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size - 1.0)
+            .color(theme.item_foreground);
+
+        let label_metrics = renderer.measure_text(label, &label_style)?;
+        let label_x = self.filename_bounds.x + 8;
+        let label_y = self.filename_bounds.y + (self.filename_bounds.height as i32 - label_metrics.height as i32) / 2;
+        renderer.text(label, label_x as f64, label_y as f64, &label_style)?;
+
+        // Text content area (after label)
+        let text_padding = 8;
+        let text_x_start = label_x + label_metrics.width as i32 + text_padding;
+        let text_max_width = (self.filename_bounds.x + self.filename_bounds.width as i32 - text_x_start - text_padding) as u32;
+
+        let text_style = TextStyle::new()
+            .font_family(&theme.font_family)
+            .font_size(theme.font_size)
+            .color(theme.foreground);
+
+        // Selection highlight
+        if let Some(sel_start) = self.filename_selection_start {
+            if sel_start != self.filename_cursor {
+                let (from, to) = if sel_start < self.filename_cursor {
+                    (sel_start, self.filename_cursor)
+                } else {
+                    (self.filename_cursor, sel_start)
+                };
+
+                // Measure text up to selection start and end
+                let before_sel = &self.filename[..from];
+                let selection = &self.filename[from..to];
+
+                let before_width = if before_sel.is_empty() {
+                    0
+                } else {
+                    renderer.measure_text(before_sel, &text_style)?.width
+                };
+                let sel_width = renderer.measure_text(selection, &text_style)?.width;
+
+                let sel_x = text_x_start + before_width as i32;
+                let sel_rect = Rect::new(
+                    sel_x,
+                    self.filename_bounds.y + 4,
+                    sel_width.min(text_max_width),
+                    self.filename_bounds.height - 8,
+                );
+                renderer.fill_rect(sel_rect, theme.selection_background.with_alpha(0.4))?;
+            }
+        }
+
+        // Filename text
+        let text_y = self.filename_bounds.y + (self.filename_bounds.height as i32 - theme.font_size as i32) / 2;
+        renderer.text(&self.filename, text_x_start as f64, text_y as f64, &text_style)?;
+
+        // Cursor when editing
+        if self.filename_editing {
+            let cursor_text = &self.filename[..self.filename_cursor];
+            let cursor_offset = if cursor_text.is_empty() {
+                0
+            } else {
+                renderer.measure_text(cursor_text, &text_style)?.width
+            };
+
+            let cursor_x = text_x_start + cursor_offset as i32;
+            let cursor_rect = Rect::new(
+                cursor_x,
+                self.filename_bounds.y + 6,
+                2,
+                self.filename_bounds.height - 12,
+            );
+            renderer.fill_rect(cursor_rect, theme.foreground)?;
+        }
 
         Ok(())
     }

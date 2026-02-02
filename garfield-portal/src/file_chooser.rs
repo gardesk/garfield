@@ -33,12 +33,15 @@ impl FileChooser {
         filters: Vec<String>,
         current_folder: Option<String>,
     ) -> (u32, HashMap<String, Value<'static>>) {
-        // Use full path to ensure we get the right garfield binary
-        // (user may have old version in ~/.cargo/bin before /usr/local/bin in PATH)
-        let garfield_path = if std::path::Path::new("/usr/local/bin/garfield").exists() {
-            "/usr/local/bin/garfield"
+        // Find garfield binary - prefer ~/.cargo/bin (development), then /usr/local/bin, then PATH
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cargo_path = format!("{}/.cargo/bin/garfield", home);
+        let garfield_path = if std::path::Path::new(&cargo_path).exists() {
+            cargo_path
+        } else if std::path::Path::new("/usr/local/bin/garfield").exists() {
+            "/usr/local/bin/garfield".to_string()
         } else {
-            "garfield" // Fall back to PATH lookup
+            "garfield".to_string() // Fall back to PATH lookup
         };
 
         let mut cmd = Command::new(garfield_path);
@@ -190,6 +193,112 @@ impl FileChooser {
             None
         }
     }
+
+    /// Extract current_name (suggested filename) from options for SaveFile.
+    fn parse_current_name(options: &HashMap<&str, Value<'_>>) -> Option<String> {
+        if let Some(Value::Str(s)) = options.get("current_name") {
+            Some(s.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Spawn garfield in save mode.
+    async fn spawn_save_picker(
+        &self,
+        handle: OwnedObjectPath,
+        title: &str,
+        suggested_filename: Option<String>,
+        current_folder: Option<String>,
+    ) -> (u32, HashMap<String, Value<'static>>) {
+        // Find garfield binary - prefer ~/.cargo/bin (development), then /usr/local/bin, then PATH
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cargo_path = format!("{}/.cargo/bin/garfield", home);
+        let garfield_path = if std::path::Path::new(&cargo_path).exists() {
+            cargo_path
+        } else if std::path::Path::new("/usr/local/bin/garfield").exists() {
+            "/usr/local/bin/garfield".to_string()
+        } else {
+            "garfield".to_string()
+        };
+
+        let mut cmd = Command::new(&garfield_path);
+        cmd.arg("--picker");
+        cmd.arg("--save");
+
+        if let Some(filename) = suggested_filename {
+            cmd.arg("--save-filename").arg(&filename);
+        }
+
+        if !title.is_empty() {
+            cmd.arg("--title").arg(title);
+        }
+
+        if let Some(folder) = current_folder {
+            cmd.arg(&folder);
+        }
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::inherit());
+
+        tracing::info!("Spawning garfield save picker: {:?}", cmd);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to spawn garfield: {}", e);
+                return (ResponseCode::Error as u32, HashMap::new());
+            }
+        };
+
+        tracing::info!("garfield save picker spawned with PID {:?}", child.id());
+
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                tracing::error!("Failed to get stdout from garfield");
+                return (ResponseCode::Error as u32, HashMap::new());
+            }
+        };
+
+        self.request_manager.add(handle.clone(), child).await;
+
+        tracing::info!("Waiting for garfield save picker to complete...");
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        let mut paths = Vec::new();
+
+        while let Ok(Some(line)) = lines.next_line().await {
+            if !line.is_empty() {
+                tracing::debug!("garfield output: {}", line);
+                paths.push(line);
+            }
+        }
+
+        tracing::info!("garfield save picker completed, got {} paths", paths.len());
+        for (i, path) in paths.iter().enumerate() {
+            tracing::info!("  path[{}]: {:?}", i, path);
+        }
+
+        let request = self.request_manager.remove(&handle.as_ref()).await;
+
+        if let Some(req) = &request {
+            if req.cancelled {
+                tracing::info!("Request was cancelled");
+                return (ResponseCode::Cancelled as u32, HashMap::new());
+            }
+        }
+
+        if paths.is_empty() {
+            tracing::info!("No path selected, treating as cancelled");
+            (ResponseCode::Cancelled as u32, HashMap::new())
+        } else {
+            tracing::info!("Returning save path: {:?}", paths[0]);
+            let response = build_file_chooser_response(paths);
+            tracing::info!("Response: {:?}", response);
+            (ResponseCode::Success as u32, response)
+        }
+    }
 }
 
 #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
@@ -263,23 +372,23 @@ impl FileChooser {
         options: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<(u32, HashMap<String, Value<'static>>)> {
         tracing::info!("SaveFile request: handle={}, title={}", handle, title);
+        tracing::debug!("SaveFile options: {:?}", options);
 
-        // For now, save dialogs work like open dialogs but for directories
-        // A full implementation would show a save dialog with filename input
         let handle_owned: OwnedObjectPath = handle.into();
         let current_folder = Self::parse_current_folder(&options);
+        let suggested_filename = Self::parse_current_name(&options);
+
+        tracing::info!("SaveFile: folder={:?}, filename={:?}", current_folder, suggested_filename);
 
         let request = Request::new(handle_owned.clone(), self.request_manager.clone());
         server.at(handle_owned.as_ref(), request).await
             .map_err(|e| fdo::Error::Failed(format!("Failed to register request: {}", e)))?;
 
-        // For save, we pick a directory and the caller handles the filename
-        let result = self.spawn_picker(
+        // Spawn picker in save mode with suggested filename
+        let result = self.spawn_save_picker(
             handle_owned.clone(),
             title,
-            true, // directory mode for save location
-            false,
-            Vec::new(),
+            suggested_filename,
             current_folder,
         ).await;
 
