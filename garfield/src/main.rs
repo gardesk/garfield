@@ -46,6 +46,10 @@ pub struct Args {
     /// Suggested filename for save mode
     #[arg(long, requires = "save")]
     pub save_filename: Option<String>,
+
+    /// Parent window ID for transient-for hint (X11 window ID)
+    #[arg(long, requires = "picker")]
+    pub parent_window: Option<u32>,
 }
 
 /// Picker mode configuration parsed from CLI args.
@@ -121,6 +125,8 @@ pub struct PickerConfig {
     pub title: Option<String>,
     /// Accept button label.
     pub accept_label: String,
+    /// Parent window ID for transient-for hint.
+    pub parent_window: Option<u32>,
 }
 
 impl PickerConfig {
@@ -156,6 +162,7 @@ impl PickerConfig {
             mode,
             title: args.title.clone(),
             accept_label: args.accept_label.clone().unwrap_or_else(|| default_label.to_string()),
+            parent_window: args.parent_window,
         }
     }
 

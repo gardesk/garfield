@@ -141,6 +141,11 @@ impl App {
         let x = monitor.rect.x + (monitor.rect.width as i32 - width as i32) / 2;
         let y = monitor.rect.y + (monitor.rect.height as i32 - height as i32) / 2;
 
+        tracing::debug!(
+            "Window size: monitor={}x{}, requested={}x{} at ({}, {})",
+            monitor.rect.width, monitor.rect.height, width, height, x, y
+        );
+
         // Window title depends on mode
         let title = if picker_config.is_picker() {
             picker_config.title.clone().unwrap_or_else(|| {
@@ -171,6 +176,11 @@ impl App {
         // Use Dialog window type for picker mode (better focus handling)
         if picker_config.is_picker() {
             window_config = window_config.window_type(gartk_x11::WindowType::Dialog);
+
+            // Set transient-for if parent window specified (dialog belongs to parent)
+            if let Some(parent) = picker_config.parent_window {
+                window_config = window_config.parent_window(parent).modal(true);
+            }
         }
 
         let window = Window::create(conn.clone(), window_config)?;
@@ -494,8 +504,8 @@ impl App {
     pub fn run(&mut self) -> Result<()> {
         let mut event_loop = EventLoop::new(&self.window, EventLoopConfig::default())?;
 
-        // Initial render
-        self.render()?;
+        // Don't render before event loop - wait for ConfigureNotify/Expose
+        // to get correct window dimensions from WM before first render
 
         event_loop.run(|ev, event| {
             match event {
@@ -532,7 +542,12 @@ impl App {
                     ev.request_redraw();
                 }
                 InputEvent::Resize { width, height } => {
-                    let _ = self.renderer.resize(width, height);
+                    tracing::debug!("ConfigureNotify resize: {}x{}", width, height);
+                    if let Err(e) = self.renderer.resize(width, height) {
+                        tracing::error!("Failed to resize renderer: {}", e);
+                    }
+                    // Update internal rect tracking (don't send X11 request - WM already sized us)
+                    self.window.set_size(width, height);
                     self.update_layout(width, height);
                     ev.request_redraw();
                 }
@@ -744,12 +759,12 @@ impl App {
                 }
                 PickerToolbarClick::None => {}
             }
-        } else {
-            // Check normal toolbar clicks
-            if let Some(action) = self.toolbar.on_click(pos) {
-                self.handle_toolbar_action(action);
-                return;
-            }
+        }
+
+        // Check normal toolbar clicks (always, not just when picker_toolbar is None)
+        if let Some(action) = self.toolbar.on_click(pos) {
+            self.handle_toolbar_action(action);
+            return;
         }
 
         // Check pane toolbar clicks (view mode buttons)
@@ -3379,6 +3394,9 @@ impl App {
         let sidebar_w = self.sidebar.width();
         let header_height = TAB_BAR_HEIGHT + TOOLBAR_HEIGHT + BREADCRUMB_HEIGHT;
 
+        tracing::trace!("render: size={}x{}, sidebar_w={}, root_pane_bounds={:?}",
+            size.width, size.height, sidebar_w, self.root_pane.bounds());
+
         // Clear background
         self.renderer.clear()?;
 
@@ -3619,26 +3637,111 @@ impl App {
     /// Blit the rendered surface to the window.
     fn blit_surface(&mut self) -> Result<()> {
         let size = self.renderer.size();
+        let window_size = self.window.size();
+        let stride = self.renderer.surface().stride() as usize;
+        let row_bytes = size.width as usize * 4; // 4 bytes per pixel (ARGB)
+
+        // Verify surface matches window size
+        if size.width != window_size.width || size.height != window_size.height {
+            tracing::warn!("Surface size {}x{} doesn't match window size {}x{}, skipping blit",
+                size.width, size.height, window_size.width, window_size.height);
+            return Ok(());
+        }
+
         let window_id = self.window.id();
         let depth = self.window.depth();
         let gc = self.gc;
         let conn = self.window.connection().clone();
 
-        // Access surface data directly without copying, blit to X11
-        self.renderer.surface_mut().with_data(|data| {
-            let _ = conn.inner().put_image(
-                ImageFormat::Z_PIXMAP,
-                window_id,
-                gc,
-                size.width as u16,
-                size.height as u16,
-                0,
-                0,
-                0,
-                depth,
-                data,
-            );
-        })?;
+        // Get maximum request size (leave some headroom for request headers)
+        let max_request_bytes = conn.maximum_request_bytes().saturating_sub(1024);
+        let total_bytes = row_bytes * size.height as usize;
+
+        // Check if we need to chunk the image
+        if total_bytes <= max_request_bytes {
+            // Image fits in a single request
+            tracing::trace!("blit_surface: {}x{} ({} bytes) in single request",
+                size.width, size.height, total_bytes);
+
+            self.renderer.surface_mut().with_data(|data| {
+                if stride == row_bytes {
+                    let _ = conn.inner().put_image(
+                        ImageFormat::Z_PIXMAP,
+                        window_id,
+                        gc,
+                        size.width as u16,
+                        size.height as u16,
+                        0,
+                        0,
+                        0,
+                        depth,
+                        data,
+                    );
+                } else {
+                    let mut packed = Vec::with_capacity(total_bytes);
+                    for y in 0..size.height as usize {
+                        let row_start = y * stride;
+                        let row_end = row_start + row_bytes;
+                        if row_end <= data.len() {
+                            packed.extend_from_slice(&data[row_start..row_end]);
+                        }
+                    }
+                    let _ = conn.inner().put_image(
+                        ImageFormat::Z_PIXMAP,
+                        window_id,
+                        gc,
+                        size.width as u16,
+                        size.height as u16,
+                        0,
+                        0,
+                        0,
+                        depth,
+                        &packed,
+                    );
+                }
+            })?;
+        } else {
+            // Image too large - split into horizontal bands
+            let rows_per_chunk = max_request_bytes / row_bytes;
+            let rows_per_chunk = rows_per_chunk.max(1); // At least 1 row per chunk
+
+            tracing::debug!("blit_surface: {}x{} ({} bytes) exceeds max {} bytes, using {} rows per chunk",
+                size.width, size.height, total_bytes, max_request_bytes, rows_per_chunk);
+
+            self.renderer.surface_mut().with_data(|data| {
+                let mut y_offset = 0u32;
+                while y_offset < size.height {
+                    let chunk_height = (size.height - y_offset).min(rows_per_chunk as u32);
+                    let chunk_bytes = row_bytes * chunk_height as usize;
+
+                    // Extract this chunk's data
+                    let mut chunk_data = Vec::with_capacity(chunk_bytes);
+                    for row in 0..chunk_height as usize {
+                        let src_y = y_offset as usize + row;
+                        let row_start = src_y * stride;
+                        let row_end = row_start + row_bytes;
+                        if row_end <= data.len() {
+                            chunk_data.extend_from_slice(&data[row_start..row_end]);
+                        }
+                    }
+
+                    let _ = conn.inner().put_image(
+                        ImageFormat::Z_PIXMAP,
+                        window_id,
+                        gc,
+                        size.width as u16,
+                        chunk_height as u16,
+                        0,
+                        y_offset as i16,
+                        0,
+                        depth,
+                        &chunk_data,
+                    );
+
+                    y_offset += chunk_height;
+                }
+            })?;
+        }
 
         self.window.connection().flush()?;
 

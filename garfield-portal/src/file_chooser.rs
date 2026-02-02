@@ -23,6 +23,17 @@ impl FileChooser {
         }
     }
 
+    /// Parse X11 window ID from portal parent_window string.
+    /// Format is "x11:<xid>" where xid is the window ID in hex.
+    fn parse_parent_window(parent_window: &str) -> Option<u32> {
+        if parent_window.starts_with("x11:") {
+            let hex_str = &parent_window[4..];
+            u32::from_str_radix(hex_str, 16).ok()
+        } else {
+            None
+        }
+    }
+
     /// Spawn garfield in picker mode and collect results.
     async fn spawn_picker(
         &self,
@@ -32,6 +43,7 @@ impl FileChooser {
         multiple: bool,
         filters: Vec<String>,
         current_folder: Option<String>,
+        parent_window: Option<u32>,
     ) -> (u32, HashMap<String, Value<'static>>) {
         // Find garfield binary - prefer ~/.cargo/bin (development), then /usr/local/bin, then PATH
         let home = std::env::var("HOME").unwrap_or_default();
@@ -61,6 +73,10 @@ impl FileChooser {
 
         if !filters.is_empty() {
             cmd.arg("--filter").arg(filters.join(";"));
+        }
+
+        if let Some(parent) = parent_window {
+            cmd.arg("--parent-window").arg(parent.to_string());
         }
 
         if let Some(folder) = current_folder {
@@ -210,6 +226,7 @@ impl FileChooser {
         title: &str,
         suggested_filename: Option<String>,
         current_folder: Option<String>,
+        parent_window: Option<u32>,
     ) -> (u32, HashMap<String, Value<'static>>) {
         // Find garfield binary - prefer ~/.cargo/bin (development), then /usr/local/bin, then PATH
         let home = std::env::var("HOME").unwrap_or_default();
@@ -232,6 +249,10 @@ impl FileChooser {
 
         if !title.is_empty() {
             cmd.arg("--title").arg(title);
+        }
+
+        if let Some(parent) = parent_window {
+            cmd.arg("--parent-window").arg(parent.to_string());
         }
 
         if let Some(folder) = current_folder {
@@ -311,13 +332,14 @@ impl FileChooser {
         #[zbus(object_server)] server: &zbus::ObjectServer,
         handle: ObjectPath<'_>,
         _app_id: &str,
-        _parent_window: &str,
+        parent_window: &str,
         title: &str,
         options: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<(u32, HashMap<String, Value<'static>>)> {
-        tracing::info!("OpenFile request: handle={}, title={}", handle, title);
+        tracing::info!("OpenFile request: handle={}, title={}, parent_window={}", handle, title, parent_window);
 
         let handle_owned: OwnedObjectPath = handle.into();
+        let parent_window_id = Self::parse_parent_window(parent_window);
 
         // Parse options
         let multiple = options.get("multiple")
@@ -348,6 +370,7 @@ impl FileChooser {
             multiple,
             filters,
             current_folder,
+            parent_window_id,
         ).await;
 
         tracing::debug!("Picker returned: {:?}", result.0);
@@ -367,18 +390,19 @@ impl FileChooser {
         #[zbus(object_server)] server: &zbus::ObjectServer,
         handle: ObjectPath<'_>,
         _app_id: &str,
-        _parent_window: &str,
+        parent_window: &str,
         title: &str,
         options: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<(u32, HashMap<String, Value<'static>>)> {
-        tracing::info!("SaveFile request: handle={}, title={}", handle, title);
+        tracing::info!("SaveFile request: handle={}, title={}, parent_window={}", handle, title, parent_window);
         tracing::debug!("SaveFile options: {:?}", options);
 
         let handle_owned: OwnedObjectPath = handle.into();
+        let parent_window_id = Self::parse_parent_window(parent_window);
         let current_folder = Self::parse_current_folder(&options);
         let suggested_filename = Self::parse_current_name(&options);
 
-        tracing::info!("SaveFile: folder={:?}, filename={:?}", current_folder, suggested_filename);
+        tracing::info!("SaveFile: folder={:?}, filename={:?}, parent={:?}", current_folder, suggested_filename, parent_window_id);
 
         let request = Request::new(handle_owned.clone(), self.request_manager.clone());
         server.at(handle_owned.as_ref(), request).await
@@ -390,6 +414,7 @@ impl FileChooser {
             title,
             suggested_filename,
             current_folder,
+            parent_window_id,
         ).await;
 
         let _ = server.remove::<Request, _>(&handle_owned).await;
@@ -403,14 +428,15 @@ impl FileChooser {
         #[zbus(object_server)] server: &zbus::ObjectServer,
         handle: ObjectPath<'_>,
         _app_id: &str,
-        _parent_window: &str,
+        parent_window: &str,
         title: &str,
         options: HashMap<&str, Value<'_>>,
     ) -> fdo::Result<(u32, HashMap<String, Value<'static>>)> {
-        tracing::info!("SaveFiles request: handle={}, title={}", handle, title);
+        tracing::info!("SaveFiles request: handle={}, title={}, parent_window={}", handle, title, parent_window);
 
         // SaveFiles picks a directory for saving multiple files
         let handle_owned: OwnedObjectPath = handle.into();
+        let parent_window_id = Self::parse_parent_window(parent_window);
         let current_folder = Self::parse_current_folder(&options);
 
         let request = Request::new(handle_owned.clone(), self.request_manager.clone());
@@ -424,6 +450,7 @@ impl FileChooser {
             false,
             Vec::new(),
             current_folder,
+            parent_window_id,
         ).await;
 
         let _ = server.remove::<Request, _>(&handle_owned).await;
