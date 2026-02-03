@@ -293,6 +293,13 @@ impl PickerToolbar {
         &self.filename
     }
 
+    /// Set the filename (e.g., when clicking a file in save mode).
+    pub fn set_filename(&mut self, filename: &str) {
+        self.filename = filename.to_string();
+        self.filename_cursor = self.filename.len();
+        self.filename_selection_start = None;
+    }
+
     /// Handle keyboard input for filename editing. Returns true if handled.
     pub fn handle_key(&mut self, key: &Key) -> bool {
         if !self.filename_editing {

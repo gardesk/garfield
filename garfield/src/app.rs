@@ -397,6 +397,14 @@ impl App {
             return false;
         };
 
+        // In save mode, we need a non-empty filename (directory selection is automatic)
+        if self.picker_config.mode.is_save_mode() {
+            return self.picker_toolbar
+                .as_ref()
+                .map(|pt| !pt.filename().is_empty())
+                .unwrap_or(false);
+        }
+
         let selected = tab.selected_entries();
         let filters = self.picker_config.mode.filters();
 
@@ -904,6 +912,27 @@ impl App {
                     tab.on_click(pos, modifiers);
                 }
             }
+
+            // In save mode, populate filename when clicking a file
+            if self.picker_config.mode.is_save_mode() {
+                let filename_to_set = self.focused_pane()
+                    .and_then(|pane| pane.active_tab())
+                    .and_then(|tab| {
+                        let selected = tab.selected_entries();
+                        if selected.len() == 1 && !selected[0].is_dir() {
+                            Some(selected[0].name.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(filename) = filename_to_set {
+                    if let Some(ref mut pt) = self.picker_toolbar {
+                        pt.set_filename(&filename);
+                    }
+                }
+            }
+
             // Update status bar with new selection
             self.update_status_bar();
 
