@@ -131,8 +131,8 @@ impl App {
         // Connect to X11
         let conn = Connection::connect(None)?;
 
-        // Get primary monitor for window sizing
-        let monitor = gartk_x11::primary_monitor(&conn)?;
+        // Get monitor of active window for window sizing
+        let monitor = gartk_x11::monitor_of_active_window(&conn)?;
 
         // Calculate window size (70% of screen, smaller for picker mode)
         let scale = if picker_config.is_picker() { 0.5 } else { 0.7 };
